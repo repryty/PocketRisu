@@ -1076,3 +1076,109 @@ describe('fast-path — per-module granularity', () => {
         expect(liveHash).toBe(freshHash)
     })
 })
+
+describe('tracked plugin blocks — avoid unrelated full scans', () => {
+    function observedBlock<T extends object>(value: T) {
+        let reads = 0
+        const proxy = new Proxy(value, {
+            ownKeys(target) {
+                reads++
+                return Reflect.ownKeys(target)
+            },
+            get(target, key, receiver) {
+                reads++
+                return Reflect.get(target, key, receiver)
+            },
+            getOwnPropertyDescriptor(target, key) {
+                reads++
+                return Reflect.getOwnPropertyDescriptor(target, key)
+            },
+        })
+        return { proxy, reads: () => reads }
+    }
+
+    test('an unrelated root save does not traverse plugins or pluginCustomStorage', async () => {
+        const initial: any = dbWith([chr('a')], {
+            plugins: [{ name: 'p', script: 'x'.repeat(100) }],
+            pluginCustomStorage: { cache: { payload: 'x'.repeat(10_000) } },
+        })
+        const p = new RisuSavePatcher()
+        await p.init(initial)
+        p.trustTrackedPluginBlockChanges()
+
+        const plugins = observedBlock(clone(initial.plugins))
+        const pluginStorage = observedBlock(clone(initial.pluginCustomStorage))
+        const next = {
+            ...clone(initial),
+            personaPrompt: 'changed root value',
+            plugins: plugins.proxy,
+            pluginCustomStorage: pluginStorage.proxy,
+        }
+
+        const { patch } = await p.set(next, { ...emptyToSave(), root: true })
+        expect(patch.some((op: any) => op.path === '/personaPrompt')).toBe(true)
+        expect(plugins.reads()).toBe(0)
+        expect(pluginStorage.reads()).toBe(0)
+    })
+
+    test('dirty plugin blocks still round-trip exactly and keep the protocol hash', async () => {
+        const { applyPatch: apply } = await import('fast-json-patch')
+        const initial = dbWith([chr('a')], {
+            plugins: [{ name: 'old', enabled: true }],
+            pluginCustomStorage: { cache: { value: 1 }, untouched: ['a', 'b'] },
+        })
+        const changed = clone(initial)
+        changed.plugins[0].name = 'new'
+        changed.pluginCustomStorage.cache.value = 2
+        changed.pluginCustomStorage.added = { ok: true }
+
+        const live = new RisuSavePatcher({ trustTrackedPluginBlocks: true })
+        await live.init(initial)
+        const { patch } = await live.set(changed, {
+            ...emptyToSave(),
+            plugins: true,
+            pluginCustomStorage: true,
+        })
+
+        const serverState = JSON.parse(JSON.stringify(normalizeJSON(initial)))
+        apply(serverState, patch)
+        expect(serverState).toEqual(normalizeJSON(changed))
+
+        const liveHash = (await live.set(changed, emptyToSave())).expectedHash
+        const fresh = new RisuSavePatcher()
+        await fresh.init(changed)
+        const freshHash = (await fresh.set(changed, emptyToSave())).expectedHash
+        expect(liveHash).toBe(freshHash)
+    })
+
+    test('tracked deletion emits the same root removal and converges', async () => {
+        const initial = dbWith([chr('a')], {
+            plugins: [],
+            pluginCustomStorage: { cache: { value: 1 } },
+        })
+        const changed = clone(initial)
+        delete changed.pluginCustomStorage
+
+        const p = new RisuSavePatcher({ trustTrackedPluginBlocks: true })
+        await p.init(initial)
+        const first = await p.set(changed, { ...emptyToSave(), pluginCustomStorage: true })
+        expect(first.patch).toContainEqual({ op: 'remove', path: '/pluginCustomStorage' })
+        expect((await p.set(changed, emptyToSave())).patch).toEqual([])
+    })
+
+    test('the exported default still detects untracked plugin changes defensively', async () => {
+        const initial = dbWith([chr('a')], {
+            plugins: [{ name: 'old' }],
+            pluginCustomStorage: { value: 1 },
+        })
+        const changed = clone(initial)
+        changed.plugins[0].name = 'new'
+        changed.pluginCustomStorage.value = 2
+
+        const p = new RisuSavePatcher()
+        await p.init(initial)
+        const { patch } = await p.set(changed, emptyToSave())
+        expect(patch.some((op: any) => op.path === '/plugins/0/name')).toBe(true)
+        expect(patch.some((op: any) => op.path === '/pluginCustomStorage/value')).toBe(true)
+    })
+})

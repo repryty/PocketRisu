@@ -451,6 +451,10 @@ export async function saveDb() {
         compression: false
     })
 
+    // Stay defensive through the first sync: plugins can mutate their storage
+    // during boot, before the Svelte save effects below establish dirty flags.
+    // After one successful persistence the baseline and tracker are aligned,
+    // and persistTrackedChanges() enables the no-scan fast path.
     let patcher = new RisuSavePatcher()
     if (supportsPatchSync) {
         await patcher.init(patchSyncBaseline ?? getDatabase())
@@ -799,7 +803,7 @@ export async function saveDb() {
                 compression: false
             })
             if (supportsPatchSync) {
-                patcher = new RisuSavePatcher()
+                patcher = new RisuSavePatcher({ trustTrackedPluginBlocks: true })
                 await patcher.init(mergedBaseline)
             }
         }
@@ -1073,6 +1077,9 @@ export async function saveDb() {
             forageStorage.setDbEtag(newEtag)
         }
 
+        if (supportsPatchSync) {
+            patcher.trustTrackedPluginBlockChanges()
+        }
 
         return 'saved'
     }

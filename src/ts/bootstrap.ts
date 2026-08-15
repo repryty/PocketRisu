@@ -5,7 +5,6 @@ import { get } from "svelte/store";
 import { setDatabase, defaultSdDataFunc, getDatabase, changeToThemePreset } from "./storage/database.svelte";
 import { chatDraftKey, sweepOrphanDrafts } from "./storage/chatDraft";
 import { checkRisuUpdate } from "./update";
-import { fetchPublicStats } from "./publicStats";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState, bootBackupPromptStore } from "./stores.svelte";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, alertTOS, waitAlert, alertConfirm, alertInput } from "./alert";
@@ -181,7 +180,6 @@ export async function loadData() {
                 cleanChunks().catch(console.error)
             }, 5_000)
             checkRisuUpdate()
-            fetchPublicStats()
             // Server-side model-job recovery (jobRecovery.ts): slot journaled
             // responses from disconnected generations back into their chats.
             // Installs the return triggers (visibility / online) and runs the

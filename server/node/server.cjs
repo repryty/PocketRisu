@@ -847,16 +847,6 @@ if (existsSync(jwtSecretPath)) {
     writeFileSync(jwtSecretPath, jwtSecret, 'utf-8')
 }
 
-// ── Instance ID for anonymous usage analytics ────────────────────────────────
-const instanceIdPath = path.join(savePath, '__instance_id')
-let instanceId
-if (existsSync(instanceIdPath)) {
-    instanceId = readFileSync(instanceIdPath, 'utf-8').trim()
-} else {
-    instanceId = nodeCrypto.randomUUID()
-    writeFileSync(instanceIdPath, instanceId, 'utf-8')
-}
-
 const authCodePath = path.join(process.cwd(), 'save', '__authcode')
 const inlayDir = path.join(savePath, 'inlays')
 const inlayMigrationMarker = path.join(inlayDir, '.migrated_to_fs')
@@ -974,7 +964,6 @@ function stopTunnel() {
 // ── Update check ─────────────────────────────────────────────────────────────
 const UPDATE_CHECK_DISABLED = process.env.RISU_UPDATE_CHECK === 'false';
 const UPDATE_CHECK_URL = process.env.RISU_UPDATE_URL || 'https://risu-update-worker.nodridan.workers.dev/check';
-const PUBLIC_STATS_URL = (process.env.RISU_UPDATE_URL || 'https://risu-update-worker.nodridan.workers.dev/check').replace(/\/check$/, '/api/public-stats');
 
 // Re-read on each call so non-portable updates (docker/git pull) without a
 // process restart don't keep reporting the old version to the update worker.
@@ -990,7 +979,7 @@ const GITHUB_REPO = 'PocketRisu/PocketRisu';
 
 const deploymentType = (() => {
     // Only portable builds have the .portable marker (created by CI release workflow).
-    // Self-update is gated on this — all other types are inferred for analytics only.
+    // Self-update is gated on this; other values are shown locally in update UI.
     // Wrapped in try/catch so unexpected filesystem errors can't crash server boot.
     try {
         if (existsSync(path.join(process.cwd(), '.portable'))) return 'portable';
@@ -1346,17 +1335,13 @@ async function migrateInlaysToFilesystem() {
     await fs.writeFile(inlayMigrationMarker, new Date().toISOString(), 'utf-8');
 }
 
-async function fetchLatestRelease(lang) {
+async function fetchLatestRelease() {
     if (UPDATE_CHECK_DISABLED) return null;
     try {
         const currentVersion = getCurrentVersion();
-        const params = new URLSearchParams({
-            v: currentVersion,
-            d: deploymentType,
-            os: `${process.platform}-${process.arch}`,
-            id: instanceId,
-        });
-        if (lang) params.set('l', String(lang).slice(0, 16));
+        // Only the version required for update comparison is sent. Do not add
+        // installation IDs, platform details, deployment type, or locale here.
+        const params = new URLSearchParams({ v: currentVersion });
         const url = `${UPDATE_CHECK_URL}?${params}`;
         const res = await fetch(url);
         if (!res.ok) return null;
@@ -2799,8 +2784,7 @@ async function hubProxyFunc(req, res) {
         delete headersToSend['content-length'];
         delete headersToSend['x-risu-node-path'];
 
-        const hubOrigin = new URL(hubURL).origin;
-        headersToSend.origin = hubOrigin;
+        headersToSend.origin = new URL(externalURL).origin;
 
         //if Authorization header is "Server-Auth, set the token to be Server-Auth
         if(headersToSend['Authorization'] === 'X-Node-Server-Auth'){
@@ -2855,7 +2839,7 @@ async function hubProxyFunc(req, res) {
             }
             return;
         }
-        
+
         if (response.body) {
             await pipeline(response.body, res);
         } else {
@@ -5847,18 +5831,6 @@ app.post('/api/inlays/compress', sessionAuthMiddleware, async (req, res) => {
     res.end();
 });
 
-// ── Public stats proxy ───────────────────────────────────────────────────────
-app.get('/api/public-stats', async (req, res) => {
-    try {
-        const r = await fetch(PUBLIC_STATS_URL);
-        if (!r.ok) { res.status(r.status).json({ error: 'upstream error' }); return; }
-        const data = await r.json();
-        res.json(data);
-    } catch {
-        res.status(502).json({ error: 'fetch failed' });
-    }
-});
-
 // ── Update check endpoint ────────────────────────────────────────────────────
 app.get('/api/update-check', async (req, res) => {
     const currentVersion = getCurrentVersion();
@@ -5866,7 +5838,7 @@ app.get('/api/update-check', async (req, res) => {
         res.json({ currentVersion, hasUpdate: false, severity: 'none', disabled: true, deploymentType, canSelfUpdate: false });
         return;
     }
-    const result = await fetchLatestRelease(req.query.lang);
+    const result = await fetchLatestRelease();
     const response = result || { currentVersion, hasUpdate: false, severity: 'none' };
     response.deploymentType = deploymentType;
     response.canSelfUpdate = deploymentType === 'portable'

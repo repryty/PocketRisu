@@ -1637,9 +1637,11 @@ export async function downloadRisuHub(id:string, arg:{
                 msg: "Downloading..."
             })
         }
-        const res = await fetch("https://realm.risuai.net/api/v1/download/dynamic/" + id + '?cors=true', {
+        const downloadURL = `https://realm.risuai.net/api/v1/download/dynamic/${encodeURIComponent(id)}?cors=true`
+        const res = await fetch(`${hubURL}/realm-download`, {
             headers: {
-                "x-risu-api-version": "4"
+                "x-risu-api-version": "4",
+                "x-risu-node-path": encodeURIComponent(downloadURL)
             }
         })
         if(res.status !== 200){

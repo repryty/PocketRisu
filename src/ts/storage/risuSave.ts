@@ -840,6 +840,7 @@ export function diffArrayWithIdGuard(
 export class RisuSavePatcher {
     private lastSyncedDb: any;
     private hashBlocks: { [key: string]: number } = {};
+    private trustTrackedPluginBlocks: boolean;
     // Cheap change pre-check baselines. calculateHash over normalizeJSON'd data
     // is the client↔server patch protocol (the server recomputes the same hash,
     // see server.cjs expectedHash verification) and MUST NOT change — but when
@@ -849,7 +850,9 @@ export class RisuSavePatcher {
     // Granularity matters: while typing into a root field (personaPrompt) or a
     // module lorebook, that whole block changes on EVERY save — so baselines
     // are kept per ROOT KEY and per MODULE, and only the changed entry pays
-    // normalize + protocol hash + diff.
+    // normalize + protocol hash + diff. PocketRisu can opt into handling
+    // `plugins` and `pluginCustomStorage` through their dedicated dirty flags,
+    // so they are never scanned during unrelated app saves.
     // Maps (not plain objects): ids come from user-importable data, so a key
     // like "__proto__" on a plain object would silently hit the prototype
     // setter instead of storing — corrupting the skip checks and, worse, the
@@ -858,6 +861,21 @@ export class RisuSavePatcher {
     private lastCharJsons = new Map<string, string>();
     private lastModuleJsons = new Map<string, string>();
     private moduleItemHashes = new Map<string, number>();
+
+    constructor(options: { trustTrackedPluginBlocks?: boolean } = {}) {
+        // Opt-in keeps the exported patcher's defensive legacy behaviour for
+        // callers that do not have PocketRisu's Svelte dirty tracker.
+        this.trustTrackedPluginBlocks = options.trustTrackedPluginBlocks === true
+    }
+
+    trustTrackedPluginBlockChanges() {
+        // Once the first server sync has succeeded, the patcher baseline and
+        // the Svelte tracker describe the same state. From then on the dirty
+        // flags are authoritative and these large JSON baselines are needless.
+        this.trustTrackedPluginBlocks = true
+        this.lastRootKeyJsons.delete('plugins')
+        this.lastRootKeyJsons.delete('pluginCustomStorage')
+    }
 
     hash(): string {
         this.hashBlocks['characters'] = SEED_ARRAY;
@@ -905,6 +923,10 @@ export class RisuSavePatcher {
         // from the normalized form means any normalize-affecting value (shared
         // ref, Date, non-finite) makes raw≠baseline and falls safely to full path.
         const { characters: _c, botPresets: _b, modules: _m, ...normRootOnly } = this.lastSyncedDb
+        if (this.trustTrackedPluginBlocks) {
+            delete normRootOnly.plugins
+            delete normRootOnly.pluginCustomStorage
+        }
         this.lastRootKeyJsons = new Map();
         for (const key of Object.keys(normRootOnly)) {
             this.lastRootKeyJsons.set(key, JSON.stringify(normRootOnly[key]))
@@ -933,6 +955,8 @@ export class RisuSavePatcher {
             characters: lastCharacters = [],
             botPresets: lastBotPresets,
             modules: lastModules,
+            plugins: _lastPlugins,
+            pluginCustomStorage: _lastPluginCustomStorage,
             ...lastRoot
         } = this.lastSyncedDb
 
@@ -940,6 +964,8 @@ export class RisuSavePatcher {
             characters: curCharacters = [],
             botPresets: curBotPresets,
             modules: curModules,
+            plugins: curPlugins,
+            pluginCustomStorage: curPluginCustomStorage,
             ...curRoot
         } = data
 
@@ -1007,6 +1033,55 @@ export class RisuSavePatcher {
             delete this.hashBlocks[key]
             this.lastRootKeyJsons.delete(key)
         }
+
+        // In PocketRisu these two blocks are independently tracked by Svelte
+        // effects. They can be very large (pluginCustomStorage in particular), so treating
+        // them as ordinary root keys made every character/chat/root save walk
+        // and stringify them even when no plugin data had changed. Process
+        // them only when their dedicated dirty bit is set, just like modules
+        // and botPresets. On the dirty path we normalize once, diff, and hash;
+        // unlike the generic root fast path no extra JSON baseline is needed.
+        const updateTrackedRootBlock = (
+            key: 'plugins' | 'pluginCustomStorage',
+            currentValue: any,
+            tracked: boolean,
+        ) => {
+            if (this.trustTrackedPluginBlocks && !tracked) return
+
+            const hadKey = Object.hasOwn(this.lastSyncedDb, key)
+            const hasKey = Object.hasOwn(data, key)
+
+            // Preserve the exported patcher's old defensive behaviour unless
+            // the app explicitly opts into trusting its dirty tracker.
+            if (!this.trustTrackedPluginBlocks && hasKey && hadKey) {
+                let currentJson: string | undefined
+                try { currentJson = JSON.stringify(currentValue) } catch { currentJson = undefined }
+                if (currentJson !== undefined && currentJson === this.lastRootKeyJsons.get(key)) return
+            }
+
+            const normalized = hasKey ? normalizeJSON(currentValue) : undefined
+
+            if (!hasKey || normalized === undefined) {
+                if (hadKey) {
+                    for (const p of compare({ [key]: this.lastSyncedDb[key] }, {})) patch.push(p)
+                    delete this.lastSyncedDb[key]
+                    delete this.hashBlocks[key]
+                    this.lastRootKeyJsons.delete(key)
+                }
+                return
+            }
+
+            const before = hadKey ? { [key]: this.lastSyncedDb[key] } : {}
+            for (const p of compare(before, { [key]: normalized })) patch.push(p)
+            this.lastSyncedDb[key] = normalized
+            this.hashBlocks[key] = calculateHash(normalized)
+            if (!this.trustTrackedPluginBlocks) {
+                this.lastRootKeyJsons.set(key, JSON.stringify(normalized))
+            }
+        }
+
+        updateTrackedRootBlock('plugins', curPlugins, toSave.plugins)
+        updateTrackedRootBlock('pluginCustomStorage', curPluginCustomStorage, toSave.pluginCustomStorage)
 
         if (toSave.botPreset) {
             const normBotPresets = normalizeJSON(curBotPresets) ?? []
@@ -1155,12 +1230,21 @@ export class RisuSavePatcher {
             }
         }
 
-        this.lastSyncedDb = {
+        const nextSyncedDb: any = {
             characters: this.lastSyncedDb.characters,
             botPresets: this.lastSyncedDb.botPresets,
             modules: this.lastSyncedDb.modules,
             ...nextRoot
         }
+        // Preserve tracked root blocks without re-reading the live Svelte
+        // proxies. Missing blocks remain missing, matching normalizeJSON.
+        if (Object.hasOwn(this.lastSyncedDb, 'plugins')) {
+            nextSyncedDb.plugins = this.lastSyncedDb.plugins
+        }
+        if (Object.hasOwn(this.lastSyncedDb, 'pluginCustomStorage')) {
+            nextSyncedDb.pluginCustomStorage = this.lastSyncedDb.pluginCustomStorage
+        }
+        this.lastSyncedDb = nextSyncedDb
 
         return {
             patch,
