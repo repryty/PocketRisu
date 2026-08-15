@@ -1092,7 +1092,12 @@
   class:dynamic-sidebar={$DynamicGUI}
   class:hidden={hidden}
   class:flex={!hidden}
-  onanimationend={() => {
+  onanimationend={(event) => {
+    // The sidebar contains independently animated children. Only the
+    // container's own close animation may commit the hidden state.
+    if(event.target !== event.currentTarget || !$sideBarClosing){
+      return
+    }
     if($sideBarClosing){
       $sideBarClosing = false
       sideBarStore.set(false)
@@ -1226,69 +1231,62 @@
   .editMode {
     min-width: 6rem;
   }
+
+  /* Keep the flex item at its final width and move only its pixels. This
+     removes the per-frame layout/paint work caused by animating width and
+     min-width while preserving the existing animation duration and state
+     classes. */
+  .setting-area,
+  .rs-sidebar {
+    will-change: transform;
+  }
+
   @keyframes sidebar-transition {
     from {
-      width: 0rem;
+      transform: translateX(-100%);
     }
     to {
-      width: var(--sidebar-size);
+      transform: translateX(0);
     }
   }
   @keyframes sidebar-transition-close {
     from {
-      width: var(--sidebar-size);
-      right:0rem;
+      transform: translateX(0);
     }
     to {
-      width: 0rem;
-      right: 10rem;
+      transform: translateX(-100%);
     }
   }
   @keyframes sidebar-transition-non-dynamic {
     from {
-      width: 0rem;
-      min-width: 0rem;
+      transform: translateX(-100%);
     }
     to {
-      width: var(--sidebar-size);
-      min-width: var(--sidebar-size);
+      transform: translateX(0);
     }
   }
   @keyframes sidebar-transition-close-non-dynamic {
     from {
-      width: var(--sidebar-size);
-      min-width: var(--sidebar-size);
-      right:0rem;
+      transform: translateX(0);
     }
     to {
-      width: 0rem;
-      min-width: 0rem;
-      right:3rem;
+      transform: translateX(-100%);
     }
   }
   @keyframes sub-sidebar-transition {
     from {
-      width: 0rem;
-      min-width: 0rem;
+      transform: translateX(-100%);
     }
     to {
-      width: 5rem;
-      min-width: 5rem;
+      transform: translateX(0);
     }
   }
   @keyframes sub-sidebar-transition-close {
     from {
-      width: 5rem;
-      min-width: 5rem;
-      max-width: 5rem;
-      right:0rem;
-
+      transform: translateX(0);
     }
     to {
-      width: 0rem;
-      min-width: 0rem;
-      max-width: 0rem;
-      right: 10rem;
+      transform: translateX(-100%);
     }
   }
   @keyframes sidebar-dark-animation{
@@ -1315,7 +1313,6 @@
   .risu-sidebar-close:not(.dynamic-sidebar) {
     animation-name: sidebar-transition-close-non-dynamic;
     animation-duration: var(--risu-animation-speed);
-    position: relative;
   }
   .risu-sidebar.dynamic-sidebar {
     animation-name: sidebar-transition;
@@ -1324,8 +1321,6 @@
   .risu-sidebar-close.dynamic-sidebar {
     animation-name: sidebar-transition-close;
     animation-duration: var(--risu-animation-speed);
-    position: relative;
-    right: 3rem;
   }
 
 
@@ -1336,7 +1331,6 @@
   .risu-sub-sidebar-close {
     animation-name: sub-sidebar-transition-close;
     animation-duration: var(--risu-animation-speed);
-    position: relative;
   }
   .sidebar-dark-animation{
     animation-name: sidebar-dark-transition;

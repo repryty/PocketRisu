@@ -1,9 +1,10 @@
 <script lang="ts">
     import isEqual from "lodash/isEqual"
-    import { DBState } from 'src/ts/stores.svelte'
+    import { DBState, sideBarClosing, sideBarStore } from 'src/ts/stores.svelte'
     import { sleep } from "src/ts/util"
     import { alertError } from "../../ts/alert"
     import { tick } from 'svelte'
+    import { get } from 'svelte/store'
     import { addMetadataToElement, getDistance, ParseMarkdown, postTranslationParse, resolveInlayPlaceholders, trimMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, translateHTML } from "../../ts/translator/translator"
     import { getModuleAssets } from "src/ts/process/modules";
@@ -46,6 +47,38 @@
     let lastCharArg:string|simpleCharacterArgument = null
     let lastChatId = -10
 
+    // Opening/closing the sidebar is a layout-only change. Keep the last
+    // completed render around so a Svelte update caused by that UI state does
+    // not invoke editDisplay (and the Lua/WASM runtime) again. The input check
+    // is intentionally strict: a simultaneous message/character update still
+    // takes the normal parsing path.
+    type ParseInput = {
+        data: string
+        charArg: string|simpleCharacterArgument
+        chatID: number
+        firstMessage: boolean
+        role: string|null
+        translated: boolean
+        retranslate: boolean
+    }
+    let lastParsedInput: ParseInput|null = null
+    let lastParsedResult: string|null = null
+    let lastSidebarState: string|undefined
+
+    function sameParseInput(a: ParseInput|null, b: ParseInput): boolean {
+        return !!a
+            && a.data === b.data
+            // Parent updates can recreate the shallow simple-character
+            // wrapper. Compare its contents so that layout updates still hit
+            // the fast path without accepting a changed script/asset set.
+            && isEqual(a.charArg, b.charArg)
+            && a.chatID === b.chatID
+            && a.firstMessage === b.firstMessage
+            && a.role === b.role
+            && a.translated === b.translated
+            && a.retranslate === b.retranslate
+    }
+
     function getCbsCondition(){
         try{
             const cbsConditions:CbsConditions = {
@@ -65,9 +98,29 @@
     let shouldRenderRawStreaming = $derived(renderRawStreaming && !translated && !retranslate)
 
     const markParsing = async (data: string, charArg: string | simpleCharacterArgument, chatID: number, tries?:number) => {
-        // track 'translated' and 'retranslate' state
-        translated;
-        retranslate;
+        // Capture the render flags explicitly. They are part of the render
+        // input and must invalidate the sidebar-only fast path when
+        // translation changes.
+        const parseInput: ParseInput = {
+            data,
+            charArg,
+            chatID,
+            firstMessage: firstMessage ?? false,
+            role,
+            translated,
+            retranslate,
+        }
+        // Read these stores without subscribing every chat message to a
+        // layout-only signal. If another dependency causes this derived value
+        // to run during the transition, the completed result above is reused.
+        const sidebarState = `${get(sideBarStore)}:${get(sideBarClosing)}`
+        const sidebarOnlyUpdate = lastSidebarState !== undefined && sidebarState !== lastSidebarState
+        lastSidebarState = sidebarState
+
+        if (sidebarOnlyUpdate && lastParsedResult !== null && sameParseInput(lastParsedInput, parseInput)) {
+            return lastParsedResult
+        }
+
         let lastParsedQueue = ''
         let mode = 'notrim' as const
         try {
@@ -147,12 +200,16 @@
                     retranslate = false
                 }, 10);
 
+                lastParsedInput = parseInput
+                lastParsedResult = transResult
                 return transResult
             }
             else{
                 const marked = await ParseMarkdown(data, charArg, mode, chatID, getCbsCondition())
                 lastParsedQueue = marked
                 lastCharArg = charArg
+                lastParsedInput = parseInput
+                lastParsedResult = marked
                 return marked
             }   
         } catch (error) {
