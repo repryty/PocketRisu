@@ -710,9 +710,17 @@ export const getV2PluginAPIs = () => {
         },
         pluginStorage: {
             getItem: (key: string) => {
-                const db = getDatabase({ snapshot: true });
-                db.pluginCustomStorage ??= {}
-                return db.pluginCustomStorage[key] || null;
+                // Snapshot only the requested value. Snapshotting the database
+                // first made a single storage read traverse and clone every
+                // character, chat, module, and plugin value.
+                const value = getDatabase().pluginCustomStorage?.[key];
+                if (!value) {
+                    // Preserve the legacy Storage-like falsy-value behaviour.
+                    return null;
+                }
+                return typeof value === 'object'
+                    ? $state.snapshot(value)
+                    : value;
             },
             setItem: (key: string, value: string) => {
                 const db = getDatabase();

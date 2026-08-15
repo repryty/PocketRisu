@@ -807,12 +807,19 @@ export function getDatabase(options:getDatabaseOptions = {}):Database{
 }
 
 export function getCurrentCharacter(options:getDatabaseOptions = {}):character{
-    const db = getDatabase(options)
+    // Select from the live database first, then snapshot only the character.
+    // Calling getDatabase({ snapshot: true }) here used to clone the entire DB
+    // (including unrelated characters, chats, modules, and plugin storage) for
+    // every plugin getChar/getCharacter call.
+    const db = getDatabase()
     if(!db.characters){
-        db.characters = []
+        if(!options.snapshot){
+            db.characters = []
+        }
+        return undefined
     }
     const char = db.characters?.[get(selectedCharID)]
-    return char
+    return options.snapshot && char ? $state.snapshot(char) as character : char
 }
 
 export function setCurrentCharacter(char:character){
@@ -823,12 +830,17 @@ export function setCurrentCharacter(char:character){
 }
 
 export function getCharacterByIndex(index:number,options:getDatabaseOptions = {}):character{
-    const db = getDatabase(options)
+    // As above, avoid snapshotting the whole database when only one character
+    // was requested.
+    const db = getDatabase()
     if(!db.characters){
-        db.characters = []
+        if(!options.snapshot){
+            db.characters = []
+        }
+        return undefined
     }
     const char = db.characters?.[index]
-    return char
+    return options.snapshot && char ? $state.snapshot(char) as character : char
 }
 
 export function setCharacterByIndex(index:number,char:character){
