@@ -41,6 +41,7 @@ import { isMobile } from 'src/ts/platform'
     import Chats from './Chats.svelte';
     import Button from '../UI/GUI/Button.svelte';
     import PluginDefinedIcon from '../Others/PluginDefinedIcon.svelte';
+    import ChatLoadingSkeleton from './ChatLoadingSkeleton.svelte';
 
     const loadPlaygroundMenu = () => import('../Playground/PlaygroundMenu.svelte').then(m => m.default);
 
@@ -1298,9 +1299,7 @@ import { isMobile } from 'src/ts/platform'
             {/if}
 
             {#if !currentChatReady}
-                <div class="w-full flex justify-center text-textcolor2 italic mb-12">
-                    {language.loadingChatData}
-                </div>
+                <ChatLoadingSkeleton />
             {:else}
 
             {#if chatFoldedStateMessageIndex.index !== -1}
