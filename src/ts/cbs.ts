@@ -64,6 +64,8 @@ export type matcherArg = {
     recursiveCount?: number
     lowLevelAccess?: boolean
     cbsConditions: CbsConditions
+    /** Render-scoped module snapshot; absent for legacy/global parsing. */
+    modules?: RisuModule[]
     triggerId?: string
     getNested?: () => string[]
     setNestedRoot?: (val:string) => void
@@ -309,7 +311,10 @@ export function registerCBS(arg:CBSRegisterArg) {
             const chat = selchar.chats[selchar.chatPage]
             const characterLore = achara.globalLore ?? []
             const chatLore = chat.localLore ?? []
-            const fullLore = characterLore.concat(chatLore.concat(getModuleLorebooks()))
+            const moduleLore = matcherArg.modules
+                ? matcherArg.modules.flatMap((module) => module.lorebook ?? [])
+                : getModuleLorebooks()
+            const fullLore = characterLore.concat(chatLore.concat(moduleLore))
             return makeArray(fullLore.map((v) => {
                 return JSON.stringify(v)
             }))
@@ -1593,7 +1598,7 @@ export function registerCBS(arg:CBSRegisterArg) {
     registerFunction({
         name: 'moduleenabled',
         callback: (str, matcherArg, args, vars) => {
-            const modules = getModules()
+            const modules = matcherArg.modules ?? getModules()
             for(const module of modules){
                 if(module.namespace === args[0]){
                     return '1'
@@ -1608,7 +1613,7 @@ export function registerCBS(arg:CBSRegisterArg) {
     registerFunction({
         name: 'moduleassetlist',
         callback: (str, matcherArg, args, vars) => {
-            const module = getModules()?.find((f) => {
+            const module = (matcherArg.modules ?? getModules())?.find((f) => {
                 return f.namespace === args[0]
             })
             if(!module){

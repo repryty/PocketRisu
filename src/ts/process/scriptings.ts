@@ -18,6 +18,8 @@ import { tokenize } from "../tokenizer";
 import { fetchNative, readImage } from "../globalApi.svelte";
 import { loadLoreBookV3Prompt } from './lorebook.svelte';
 import { getPersonaPrompt, getUserName, getUserIcon } from '../util';
+import { safeStructuredClone } from '../polyfill';
+import type { RenderContext } from './renderContext';
 let luaFactory:LuaFactory
 let ScriptingSafeIds = new Set<string>()
 let ScriptingEditDisplayIds = new Set<string>()
@@ -67,23 +69,41 @@ export async function runScripted(code:string, arg:{
     mode?: string,
     type?: 'lua'|'py',
     moduleId?: string
+    target?: RenderContext['target']
+    modules?: RenderContext['modules']
 }){
     const type: 'lua'|'py' = arg.type ?? 'lua'
+    const target = arg.target ?? 'message'
     const char = arg.char ?? getCurrentCharacter()
     const data = arg.data ?? ''
-    const setVar = arg.setVar ?? setChatVar
-    const getVar = arg.getVar ?? getChatVar
     const meta = arg.meta ?? {}
     const mode = arg.mode ?? 'manual'
 
     let chat = arg.chat ?? getCurrentChat()
+    // Background scripts are allowed to transform their return value, but
+    // they never receive live chat/database references. This preserves the
+    // script's read/compute behavior without allowing a paint pass to mutate
+    // the selected bot or trigger GUI updates.
+    if(target === 'background'){
+        chat = safeStructuredClone(chat)
+    }
+    const backgroundVars: Record<string, string> = Object.fromEntries(
+        Object.entries(chat?.scriptstate ?? {}).map(([key, value]) => [key, String(value)])
+    )
+    const setVar = arg.setVar ?? (target === 'background'
+        ? (key:string, value:string) => { backgroundVars['$' + key] = value }
+        : setChatVar)
+    const getVar = arg.getVar ?? (target === 'background'
+        ? (key:string) => backgroundVars['$' + key] ?? 'null'
+        : getChatVar)
     let stopSending = false
     let lowLevelAccess = arg.lowLevelAccess ?? false
 
     if(type === 'lua'){
         await ensureLuaFactory()
     }
-    let ScriptingEngineState = await getOrCreateEngineState(mode, type);
+    const engineMode = target === 'background' ? `background:${mode}` : mode
+    let ScriptingEngineState = await getOrCreateEngineState(engineMode, type);
     
     return await ScriptingEngineState.mutex.runExclusive(async () => {
         ScriptingEngineState.moduleId = arg.moduleId
@@ -94,7 +114,7 @@ export async function runScripted(code:string, arg:{
             let declareAPI:(name: string, func:Function) => void
 
             if(ScriptingEngineState.type === 'lua'){
-                console.log('Creating new Lua engine for mode:', mode)
+                console.log('Creating new Lua engine for mode:', engineMode)
                 ScriptingEngineState.engine?.global.close()
                 ScriptingEngineState.code = code
                 ScriptingEngineState.engine = await luaFactory.createEngine({injectObjects: true})
@@ -104,7 +124,7 @@ export async function runScripted(code:string, arg:{
                 }
             }
             if(ScriptingEngineState.type === 'py'){
-                console.log('Creating new Pyodide context for mode:', mode)
+                console.log('Creating new Pyodide context for mode:', engineMode)
                 ScriptingEngineState.pyodide?.close()
                 ScriptingEngineState.pyodide = new PyodideContext()
                 declareAPI = (name:string, func:Function) => {
@@ -252,7 +272,13 @@ export async function runScripted(code:string, arg:{
             })
 
             declareAPI('cbs', (value) => {
-                return risuChatParser(value, { chara: getCurrentCharacter() })
+                const scopedCharacter = target === 'background'
+                    ? (char.type === 'simple' ? undefined : char)
+                    : getCurrentCharacter()
+                return risuChatParser(value, {
+                    chara: scopedCharacter,
+                    ...(target === 'background' ? { modules: arg.modules } : {}),
+                })
             })
             
             declareAPI('setFullChatMain', (id:string, value:string) => {
@@ -1039,7 +1065,13 @@ export async function runScripted(code:string, arg:{
             ScriptingEngineState.code = code
         }
         let accessKey = v4()
-        if(mode === 'editDisplay'){
+        // A background execution intentionally receives no capability token.
+        // The script can still return transformed data, while every mutating
+        // API guarded by ScriptingSafeIds/ScriptingEditDisplayIds is denied.
+        if(target === 'background'){
+            // no-op
+        }
+        else if(mode === 'editDisplay'){
             ScriptingEditDisplayIds.add(accessKey)
         }
         else{
@@ -1140,6 +1172,7 @@ export async function runScripted(code:string, arg:{
             }
         }
         ScriptingSafeIds.delete(accessKey)
+        ScriptingEditDisplayIds.delete(accessKey)
         ScriptingLowLevelIds.delete(accessKey)
         chat = ScriptingEngineState.chat
 
@@ -1373,7 +1406,7 @@ ${code}
 `
 }
 
-export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:character|simpleCharacterArgument, mode:string, content:T, meta?:object):Promise<T>{
+export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:character|simpleCharacterArgument, mode:string, content:T, meta?:object, context?:RenderContext):Promise<T>{
     switch(mode){
         case 'editinput':
             mode = 'editInput'
@@ -1391,10 +1424,13 @@ export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:char
     try {
         let data = content
 
-        const triggers = char.triggerscript.map((v) => {
-            v.lowLevelAccess = false
-            return v
-        }).concat(getModuleTriggers())
+        // Never mutate the live character while rendering a background. The
+        // old path intentionally keeps its historical in-place behavior.
+        const triggers = (char.triggerscript ?? []).map((v) => {
+            const trigger = context?.target === 'background' ? { ...v } : v
+            trigger.lowLevelAccess = false
+            return trigger
+        }).concat(getModuleTriggers(context?.modules ? { modules: context.modules } : undefined))
     
         for(let trigger of triggers){
             if(trigger?.effect?.[0]?.type === 'triggerlua'){
@@ -1404,6 +1440,8 @@ export async function runLuaEditTrigger<T extends string|OpenAIChat[]>(char:char
                     mode: mode,
                     data,
                     meta,
+                    target: context?.target,
+                    modules: context?.modules,
                 })
                 data = runResult.res ?? data
             }

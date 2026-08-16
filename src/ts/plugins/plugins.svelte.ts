@@ -11,6 +11,7 @@ import { checkCodeSafety } from "./pluginSafety";
 import { SafeDocument, SafeIdbFactory, SafeLocalStorage } from "./pluginSafeClass";
 import { loadV3Plugins } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
+import type { RenderContext } from "../process/renderContext";
 
 export const customProviderStore = writable([] as string[])
 
@@ -463,7 +464,7 @@ export type PluginV2ProviderOptions = {
     tokenizerFunc?: (content: string) => number[] | Promise<number[]>
 }
 
-export type EditFunction = (content: string) => string | null | undefined | Promise<string | null | undefined>
+export type EditFunction = (content: string, context?: RenderContext) => string | null | undefined | Promise<string | null | undefined>
 type ReplacerFunction = (content: OpenAIChat[], type: string) => OpenAIChat[] | Promise<OpenAIChat[]>
 
 export const pluginV2 = {

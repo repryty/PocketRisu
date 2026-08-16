@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify';
 import markdownit from 'markdown-it'
-import { appVer, getCurrentCharacter, getDatabase, type Database, type character, type customscript, type triggerscript } from '../storage/database.svelte';
+import { appVer, getCurrentCharacter, getCurrentChat, getDatabase, type Database, type character, type customscript, type triggerscript } from '../storage/database.svelte';
 import { DBState, selIdState } from '../stores.svelte';
 import { aiWatermarkingLawApplies, getFileSrc } from '../globalApi.svelte';
 import { isNodeServer } from "src/ts/platform"
@@ -21,6 +21,7 @@ import katex from 'katex'
 import { getModelInfo } from '../model/modellist';
 import { registerCBS, type matcherArg, type RegisterCallback } from '../cbs';
 import cssSelectorParser from 'postcss-selector-parser'
+import type { RenderContext } from '../process/renderContext';
 
 const markdownItOptions = {
     html: true,
@@ -449,7 +450,7 @@ type AssetPaths = {[key:string]:{
 let assetsCache: AssetPaths | null = null
 let emoAssetsCache: AssetPaths | null = null
 
-export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
+function buildAssetPaths(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
     const assetPaths: AssetPaths = {}
     const charEmoPaths: AssetPaths = {}
 
@@ -457,8 +458,13 @@ export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], 
     getAssetSrc(moduleAssets, assetPaths)
     getEmoSrc(emoAssets, charEmoPaths)
 
-    assetsCache = assetPaths
-    emoAssetsCache = charEmoPaths
+    return { assetPaths, charEmoPaths }
+}
+
+export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
+    const paths = buildAssetPaths(charAssets, emoAssets, moduleAssets)
+    assetsCache = paths.assetPaths
+    emoAssetsCache = paths.charEmoPaths
 }
 
 $effect.root(() => {
@@ -481,15 +487,28 @@ $effect.root(() => {
 const imageCBS = ['img', 'image', 'emotion', 'asset', 'bg', 'raw', 'path']
 const videoExtensions = ['mp4', 'webm', 'avi', 'm4p', 'm4v']
 
-async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|character, mode:'normal'|'back', arg:{ch:number}){
+async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|character, mode:'normal'|'back', arg:{ch:number}, context?:RenderContext){
     const assetWidthString = (DBState.db.assetWidth && DBState.db.assetWidth !== -1 || DBState.db.assetWidth === 0) ? `max-width:${DBState.db.assetWidth}rem;` : ''
 
-    if (char.type === 'character' && (!assetsCache || !emoAssetsCache)) {
-        resetAssetsCache(char.additionalAssets ?? [], char.emotionImages, getModuleAssets())
-    }
+    let assetPaths = assetsCache ?? {}
+    let emoPaths = emoAssetsCache ?? {}
 
-    const assetPaths = assetsCache ?? {}
-    const emoPaths = emoAssetsCache ?? {}
+    if(context?.target === 'background'){
+        // Build an isolated lookup from the captured bot/module set. The
+        // process-wide cache may belong to a different bot after a fast switch.
+        const paths = buildAssetPaths(
+            char.additionalAssets ?? [],
+            char.emotionImages ?? [],
+            getModuleAssets(context),
+        )
+        assetPaths = paths.assetPaths
+        emoPaths = paths.charEmoPaths
+    }
+    else if (char.type === 'character' && (!assetsCache || !emoAssetsCache)) {
+        resetAssetsCache(char.additionalAssets ?? [], char.emotionImages, getModuleAssets())
+        assetPaths = assetsCache ?? {}
+        emoPaths = emoAssetsCache ?? {}
+    }
 
     let needsSourceAccess = false
     let cx: number|null = null
@@ -584,14 +603,20 @@ async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|c
     })
 
     if(needsSourceAccess){
-        const chara = getCurrentCharacter()
+        const chara = context?.character ?? getCurrentCharacter()
         if(chara.image){}
         data = data.replace(/\uE9b4CHAR\uE9b4/g,
             chara.image ? (await getFileSrc(chara.image)) : ''
         )
 
+        const scopedPersona = context?.target === 'background' && context.chat?.bindedPersona
+            ? DBState.db.personas?.find((persona) => persona.id === context.chat?.bindedPersona)
+            : undefined
+        const userIcon = context?.target === 'background'
+            ? (scopedPersona?.icon ?? DBState.db.userIcon ?? '')
+            : getUserIcon()
         data = data.replace(/\uE9b4USER\uE9b4/g,
-            getUserIcon() ? (await getFileSrc(getUserIcon())) : ''
+            userIcon ? (await getFileSrc(userIcon)) : ''
         )
     }
     
@@ -903,29 +928,37 @@ function parseThoughtsAndTools(data:string){
 export async function ParseMarkdown(
     data:string,
     charArg:(character|simpleCharacterArgument | string) = null,
-    mode:'normal'|'back'|'pretranslate'|'notrim' = 'normal',
+    mode:'normal'|'back'|'background'|'pretranslate'|'notrim' = 'normal',
     chatID=-1,
-    cbsConditions:CbsConditions = {}
+    cbsConditions:CbsConditions = {},
+    renderContext?:RenderContext
 ) {
     let firstParsed = ''
-    const additionalAssetMode = (mode === 'back') ? 'back' : 'normal'
+    const additionalAssetMode = (mode === 'back' || mode === 'background') ? 'back' : 'normal'
     let char = (typeof(charArg) === 'string') ? (findCharacterbyId(charArg)) : (charArg)
+    const context = mode === 'background' ? {
+        ...(renderContext ?? { target: 'background' as const }),
+        target: 'background' as const,
+        character: renderContext?.character ?? (char && char.type !== 'simple' ? char : undefined),
+        chat: renderContext?.chat ?? getCurrentChat(),
+        messageIndex: renderContext?.messageIndex ?? chatID,
+    } : renderContext
 
     if(char){
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID
-        })
+        }, context)
         firstParsed = data
     }
 
     if(char){
-        data = (await processScriptFull(char, data, 'editdisplay', chatID, cbsConditions)).data
+        data = (await processScriptFull(char, data, 'editdisplay', chatID, cbsConditions, context)).data
     }
 
     if(firstParsed !== data && char){
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID
-        })
+        }, context)
     }
 
     data = parseInlayAssets(data ?? '')
@@ -940,7 +973,7 @@ export async function ParseMarkdown(
             return data
         }
     }
-    return trimMarkdown(data)
+    return trimMarkdown(data, mode === 'background' ? '.risu-background-root' : '.chattext')
 }
 
 // LRU cache for DOMPurify + decodeStyle results.
@@ -948,15 +981,15 @@ export async function ParseMarkdown(
 const trimCache = new Map<string, string>()
 const TRIM_CACHE_MAX = 200
 
-export function trimMarkdown(data:string){
+export function trimMarkdown(data:string, styleScope = '.chattext'){
     // Include hideAllImages in cache key — DOMPurify hook rewrites <img> based on this flag
-    const cacheKey = (DBState.db?.hideAllImages ? '1|' : '0|') + data
+    const cacheKey = (DBState.db?.hideAllImages ? '1|' : '0|') + styleScope + '|' + data
     let cached = trimCache.get(cacheKey)
     if (cached !== undefined) return cached
     cached = decodeStyle(DOMPurify.sanitize(data, {
         ADD_TAGS: ["iframe", "style", "risu-style", "x-em", 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac', 'msqrt'],
         ADD_ATTR: ["allow", "allowfullscreen", "frameborder", "scrolling", "risu-ctrl" ,"risu-btn", 'risu-trigger', 'risu-mark', 'risu-id', 'x-hl-lang', 'x-hl-text', 'data-inlay-id', 'data-inlay-type'],
-    }))
+    }), styleScope)
     if (trimCache.size >= TRIM_CACHE_MAX) {
         // evict oldest entry
         const firstKey = trimCache.keys().next().value
@@ -1073,7 +1106,25 @@ function encodeStyle(txt:string){
 }
 const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms
 
-function decodeStyleRule(rule:CssAtRuleAST){
+function scopeCssSelector(selector:string, styleScope:string){
+    // The fixed background renderer represents the standalone page's body
+    // with its own root element. Map page-level selectors to that root before
+    // prefixing descendants; the legacy .chattext behavior stays unchanged.
+    if(styleScope === '.risu-background-root'){
+        if(/(^|\s):root\b/.test(selector)){
+            return selector.replace(/:root\b/g, styleScope)
+        }
+        if(/^html\s+body\b/.test(selector)){
+            return selector.replace(/^html\s+body\b/, styleScope)
+        }
+        if(/^(html|body)\b/.test(selector)){
+            return selector.replace(/^(html|body)\b/, styleScope)
+        }
+    }
+    return styleScope + ' ' + selector
+}
+
+function decodeStyleRule(rule:CssAtRuleAST, styleScope = '.chattext'){
     if(rule.type === 'rule'){
         if(rule.selectors){
             for(let i=0;i<rule.selectors.length;i++){
@@ -1090,14 +1141,14 @@ function decodeStyleRule(rule:CssAtRuleAST){
 
                     slt = parser.processSync(slt)
 
-                    rule.selectors[i] = ".chattext " + slt
+                    rule.selectors[i] = scopeCssSelector(slt, styleScope)
                 }
             }
         }
     }
     if(rule.type === 'media' || rule.type === 'supports' || rule.type === 'document' || rule.type === 'host' || rule.type === 'container' ){
         for(let i=0;i<rule.rules.length;i++){
-            rule.rules[i] = decodeStyleRule(rule.rules[i])
+            rule.rules[i] = decodeStyleRule(rule.rules[i], styleScope)
         }
     }
     if(rule.type === 'import'){
@@ -1108,23 +1159,40 @@ function decodeStyleRule(rule:CssAtRuleAST){
     return rule
 }
 
-function decodeStyle(text:string){
+function decodeStyle(text:string, styleScope = '.chattext'){
     return text.replaceAll(styleDecodeRegex, (full, txt:string) => {
-        try {
-            let text = Buffer.from(txt, 'hex').toString('utf-8')
-            text = risuChatParser(text)
-            const ast = css.parse(text)
+        const decodeOne = (scope:string) => {
+            let decoded = Buffer.from(txt, 'hex').toString('utf-8')
+            decoded = risuChatParser(decoded)
+            const ast = css.parse(decoded)
             const rules = ast?.stylesheet?.rules
             if(rules){
                 for(let i=0;i<rules.length;i++){
-                    rules[i] = decodeStyleRule(rules[i])
+                    rules[i] = decodeStyleRule(rules[i], scope)
                 }
                 ast.stylesheet.rules = rules
             }
-            return `<style>${css.stringify(ast, {
+            return css.stringify(ast, {
                 indent: '',
                 compress: true,
-            })}</style>`
+            })
+        }
+        try {
+            const primary = decodeOne(styleScope)
+            // Historically every background <style> also decorated the
+            // current chat's .chattext tree. Keep that compatibility copy
+            // while constraining the new background copy to its own root.
+            if(styleScope === '.risu-background-root'){
+                let chatStyle = ''
+                try {
+                    chatStyle = decodeOne('.chattext')
+                } catch {
+                    // A malformed compatibility copy must not remove the
+                    // otherwise valid isolated background style.
+                }
+                return `<style>${primary}${chatStyle}</style>`
+            }
+            return `<style>${primary}</style>`
 
         } catch (error) {
             if(DBState.db.returnCSSError){
@@ -1716,11 +1784,13 @@ export function risuChatParser(da:string, arg:{
     functions?:Map<string,{data:string,arg:string[]}>
     callStack?:number
     cbsConditions?:CbsConditions
+    modules?: import('../process/modules').RisuModule[]
 } = {}):string{
     if (da == null) return ''
     const chatID = arg.chatID ?? -1
     const db = arg.db ?? DBState.db
     const aChara = arg.chara
+    const renderModules = arg.modules ?? (typeof aChara === 'object' ? (aChara as any).__risuModules : undefined)
     let chara:character|string = null
 
     if(aChara){
@@ -1773,6 +1843,7 @@ export function risuChatParser(da:string, arg:{
         runVar: arg.runVar ?? false,
         consistantChar: arg.consistantChar ?? false,
         cbsConditions: arg.cbsConditions ?? {},
+        modules: renderModules,
         callStack: arg.callStack,
         getNested: () => {
             return nested

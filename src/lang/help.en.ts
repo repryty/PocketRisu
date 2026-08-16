@@ -83,6 +83,7 @@ export const helpEn = {
             "A Markdown/HTML Data that would be injected to the background of chat screen.\n\n you can also use additional assets. for example, you can use `{{audio::<asset name}}` for background music." +
             "\n\n Additionaly, you can use these with additional assets:" +
             "\n - `{{bg::<asset name>}}`: inject the background as asset",
+        legacyBackgroundRenderer: "Uses the original background rendering path exactly. This is an app-local compatibility switch and is not stored in character cards or backups.",
         additionalText: "The text that would be added to Character Description only when ai thinks its needed, so you can put long texts here. seperate with double newlines.",
         charjs: "A javascript code that would run with character. for example, you can check `https://github.com/kwaroran/Risuai/blob/main/src/etc/example-char.js` CURRENTLY NOT RECOMMENDED TO USE DUDE TO SECURITY REASONS. EXPORTING WOULD NOT INCLUDE THIS.",
         romanizer:

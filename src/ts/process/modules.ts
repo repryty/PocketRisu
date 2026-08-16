@@ -7,10 +7,11 @@ import { v4 } from "uuid"
 import { convertExternalLorebook } from "./lorebook.svelte"
 import { compressImage } from '../media'
 import { decodeRPack, encodeRPack } from "../rpack/rpack_js"
-import { HideIconStore, moduleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte"
+import { HideIconStore, legacyModuleBackgroundEmbedding, ReloadGUIPointer } from "../stores.svelte"
 import {get} from "svelte/store"
 import { convertCharacterToModule, convertModuleToCharacter } from "../interchangeability"
 import { exportCharacterCard, importCharacterProcess } from "../characterCards"
+import type { RenderContext } from './renderContext'
 
 export interface MCPModule{
     url: string
@@ -401,10 +402,15 @@ function deduplicateModuleById(modules:RisuModule[]){
 
 let lastModules = ''
 let lastModuleData:RisuModule[] = []
-export function getModules(){
-    const currentChat = getCurrentChat()
-    const character = getCurrentCharacter()
-    const persona = checkPersonaBinded()
+export function getModules(context?: Pick<RenderContext, 'character'|'chat'|'modules'>){
+    // A render context is a snapshot of the selected bot/chat at render start.
+    // Do not consult the global selection again for background renders.
+    if (context?.modules) {
+        return context.modules
+    }
+
+    const currentChat = context?.chat ?? getCurrentChat()
+    const character = context?.character ?? getCurrentCharacter()
     const db = getDatabase()
     let ids = db.enabledModules ?? []
     if (currentChat){
@@ -413,6 +419,10 @@ export function getModules(){
     if(character && character.modules){
         ids = ids.concat(character.modules)
     }
+    const personaId = currentChat?.bindedPersona
+    const persona = context
+        ? (personaId ? db.personas?.find((v) => v.id === personaId) : null)
+        : (personaId ? db.personas?.find((v) => v.id === personaId) : checkPersonaBinded())
     if(persona && persona.embeddedModule){
         ids = ids.concat([persona.embeddedModule?.id])
     }
@@ -433,8 +443,8 @@ export function getModules(){
 }
 
 
-export function getModuleLorebooks() {
-    const modules = getModules()
+export function getModuleLorebooks(context?: Pick<RenderContext, 'character'|'chat'|'modules'>) {
+    const modules = getModules(context)
     let lorebooks: loreBook[] = []
     for (const module of modules) {
         if(!module){
@@ -447,8 +457,8 @@ export function getModuleLorebooks() {
     return lorebooks
 }
 
-export function getModuleAssets() {
-    const modules = getModules()
+export function getModuleAssets(context?: Pick<RenderContext, 'character'|'chat'|'modules'>) {
+    const modules = getModules(context)
     let assets: [string,string,string][] = []
     for (const module of modules) {
         if(!module){
@@ -462,8 +472,8 @@ export function getModuleAssets() {
 }
 
 
-export function getModuleTriggers() {
-    const modules = getModules()
+export function getModuleTriggers(context?: Pick<RenderContext, 'character'|'chat'|'modules'>) {
+    const modules = getModules(context)
     let triggers: triggerscript[] = []
     for (const module of modules) {
         if(!module){
@@ -483,8 +493,8 @@ export function getModuleTriggers() {
     return triggers
 }
 
-export function getModuleRegexScripts() {
-    const modules = getModules()
+export function getModuleRegexScripts(context?: Pick<RenderContext, 'character'|'chat'|'modules'>) {
+    const modules = getModules(context)
     let customscripts: customscript[] = []
     for (const module of modules) {
         if(!module){
@@ -497,8 +507,20 @@ export function getModuleRegexScripts() {
     return customscripts
 }
 
-export function getModuleToggles() {
-    const modules = getModules()
+/**
+ * Resolve the active module background at render time. Unlike the historical
+ * store, this value is never retained when the selected character/chat no
+ * longer has the module enabled.
+ */
+export function getModuleBackgroundEmbedding(context?: Pick<RenderContext, 'character'|'chat'|'modules'>) {
+    return getModules(context)
+        .filter((module) => !!module?.backgroundEmbedding)
+        .map((module) => `\n${module.backgroundEmbedding}\n`)
+        .join('')
+}
+
+export function getModuleToggles(context?: Pick<RenderContext, 'character'|'chat'|'modules'>) {
+    const modules = getModules(context)
     let costomModuleToggles: string = ''
     for (const module of modules) {
         if(!module){
@@ -511,8 +533,8 @@ export function getModuleToggles() {
     return costomModuleToggles
 }
 
-export function getModuleMcps() {
-    const modules = getModules()
+export function getModuleMcps(context?: Pick<RenderContext, 'character'|'chat'|'modules'>) {
+    const modules = getModules(context)
 
     return modules.map((v) => v.mcp?.url).filter((v) => v)
 }
@@ -577,8 +599,11 @@ export function moduleUpdate(){
         }
     })
 
+    // The legacy store intentionally preserves the historical behavior so its
+    // opt-out path remains byte-for-byte equivalent. The fixed renderer reads
+    // getModuleBackgroundEmbedding() directly instead.
     if(backgroundEmbedding){
-        moduleBackgroundEmbedding.set(backgroundEmbedding)
+        legacyModuleBackgroundEmbedding.set(backgroundEmbedding)
     }
     HideIconStore.set(getCurrentCharacter()?.hideChatIcon || moduleHideIcon)
 

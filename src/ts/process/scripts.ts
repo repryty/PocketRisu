@@ -11,6 +11,8 @@ import { HypaProcesser } from "./memory/hypamemory";
 import { runLuaEditTrigger } from "./scriptings";
 import { pluginV2 } from "../plugins/plugins.svelte";
 import { runTrigger } from "./triggers";
+import type { RenderContext } from './renderContext';
+import { safeStructuredClone } from '../polyfill';
 
 const dreg = /{{data}}/g
 const randomness = /\|\|\|/g
@@ -68,13 +70,22 @@ export async function importRegex(o?:customscript[]):Promise<customscript[]>{
 let bestMatchCache = new Map<string, string>()
 let processScriptCache = new Map<string, string>()
 
-function generateScriptCacheKey(scripts: customscript[], data: string, mode: ScriptMode, chatID = -1, cbsConditions: CbsConditions = {}) {
-    let hash = data + '|||' + mode + '|||';
+function generateScriptCacheKey(scripts: customscript[], data: string, mode: ScriptMode, chatID = -1, cbsConditions: CbsConditions = {}, context?: RenderContext) {
+    // Include render identity. Two bots can intentionally have identical
+    // regex definitions while still having different assets/state.
+    let hash = data + '|||' + mode + '|||' + (context?.target ?? 'message') + '|||'
+        + (context?.character?.chaId ?? '') + '|||'
+        + (context?.chat?.id ?? '') + '|||'
+        + (context?.modules?.map((module) => module.id).join(',') ?? '') + '|||';
+    const parserContext = context?.target === 'background' ? {
+        chara: context.character,
+        modules: context.modules,
+    } : {}
     for (const script of scripts) {
         if(script.type !== mode){
             continue
         }
-        hash += `${script.flag?.includes('<cbs>') ? risuChatParser(script.in, { chatID: chatID, cbsConditions }) : script.in}|||${script.out}${chatID}|||${script.flag ?? ''}|||${script.ableFlag ? 1 : 0}`;
+        hash += `${script.flag?.includes('<cbs>') ? risuChatParser(script.in, { chatID: chatID, cbsConditions, ...parserContext }) : script.in}|||${script.out}${chatID}|||${script.flag ?? ''}|||${script.ableFlag ? 1 : 0}`;
     }
     return hash;
 }
@@ -96,12 +107,26 @@ export function resetScriptCache(){
     processScriptCache = new Map()
 }
 
-export async function processScriptFull(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}){
+export async function processScriptFull(char:character|simpleCharacterArgument, data:string, mode:ScriptMode, chatID = -1, cbsConditions:CbsConditions = {}, context?: RenderContext){
     let db = getDatabase()
+    const isBackground = context?.target === 'background'
+    const scriptContext = context ? {
+        ...context,
+        character: context.character ?? (char.type === 'simple' ? undefined : char),
+        messageIndex: context.messageIndex ?? chatID,
+    } : undefined
+    const parseForRender = (value:string) => risuChatParser(value, {
+        chatID,
+        cbsConditions,
+        ...(scriptContext?.target === 'background' ? {
+            chara: scriptContext.character,
+            modules: scriptContext.modules,
+        } : {}),
+    })
     let emoChanged = false
-    data = await runLuaEditTrigger(char, mode, data, { index:chatID })
+    data = await runLuaEditTrigger(char, mode, data, { index:chatID }, scriptContext)
 
-    if(mode === 'editdisplay'){
+    if(mode === 'editdisplay' && !isBackground){
         const currentChar = getCurrentCharacter()
         if(currentChar){
             try{
@@ -123,16 +148,32 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
 
     if(pluginV2[mode].size > 0){
         for(const plugin of pluginV2[mode]){
-            const res = await plugin(data)
+            const res = await plugin(data, scriptContext)
             if(res !== null && res !== undefined){
                 data = res
             }
         }
     }
 
-    data = risuChatParser(data, { chatID: chatID, cbsConditions })
-    const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts())
-    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions)
+    data = parseForRender(data)
+    // Background display triggers run against cloned objects and can only
+    // return transformed display data. The legacy path keeps the historical
+    // global trigger behavior because it never supplies this context.
+    if(mode === 'editdisplay' && isBackground && char.type !== 'simple'){
+        const backgroundChar = safeStructuredClone(char)
+        const backgroundChat = safeStructuredClone(scriptContext?.chat ?? char.chats[char.chatPage])
+        const displayResult = await runTrigger(backgroundChar, 'display', {
+            chat: backgroundChat,
+            displayMode: true,
+            displayData: data,
+            modules: scriptContext?.modules,
+            target: 'background',
+        })
+        data = displayResult?.displayData ?? data
+    }
+
+    const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts(scriptContext))
+    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, scriptContext)
     const cached = getScriptCache(hash)
     if(cached){
         return {data: cached, emoChanged: false}
@@ -175,7 +216,7 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
 
             let input = script.in
             if(pscript.actions.includes('cbs')){
-                input = risuChatParser(input, { chatID: chatID, cbsConditions })
+                input = parseForRender(input)
             }
 
             const reg = new RegExp(input, flag)
@@ -243,10 +284,10 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
                                 }
                             }
                         }
-                        data = risuChatParser(data, { chatID: chatID, cbsConditions })
+                        data = parseForRender(data)
                     }
                     else{
-                        data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions })
+                        data = parseForRender(data.replace(reg, outScript))
                     }
                 }
                 else{
@@ -289,7 +330,7 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
                 }
             }
             else{
-                data = risuChatParser(data.replace(reg, outScript), { chatID: chatID, cbsConditions })
+                data = parseForRender(data.replace(reg, outScript))
             }
         }
     }
@@ -351,7 +392,10 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
         }
         const assetNames = char.additionalAssets.map((v) => v[0])
 
-        const moduleAssets = getModuleAssets()
+        const moduleAssets = getModuleAssets(scriptContext)
+        const dynamicAssetScope = scriptContext?.target === 'background'
+            ? moduleAssets.map((asset) => asset.join('|')).join('~')
+            : ''
         if(moduleAssets.length > 0){
             for(const asset of moduleAssets){
                 assetNames.push(asset[0])
@@ -365,7 +409,9 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
         for(const match of matches){
             const type = match[1]
             const assetName = match[2]
-            const cacheKey = char.chaId + '::' + assetName
+            const cacheKey = scriptContext?.target === 'background'
+                ? `${char.chaId}::${dynamicAssetScope}::${assetName}`
+                : char.chaId + '::' + assetName
             if(type !== 'emotion' && type !== 'source'){
                 if(bestMatchCache.has(cacheKey)){
                     data = data.replaceAll(match[0], `{{${type}::${bestMatchCache.get(cacheKey)}}}`)

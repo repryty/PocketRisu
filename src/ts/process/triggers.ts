@@ -16,6 +16,8 @@ import { generateAIImage } from "./stableDiff";
 import { writeInlayImage } from "./files/inlays";
 import { runScripted } from "./scriptings";
 import { calcString } from "./infunctions";
+import type { RenderContext } from './renderContext';
+import type { RisuModule } from './modules';
 
 
 export interface triggerscript{
@@ -1053,12 +1055,30 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
     displayMode?: boolean
     displayData?: string
     tempVars?: Record<string, string>
+    modules?: RisuModule[]
+    target?: RenderContext['target']
 }){
+    const backgroundBlockedEffects = new Set([
+        'command', 'showAlert', 'sendAIprompt', 'runLLM', 'runAxLLM', 'runImgGen',
+        'v2Command', 'v2ShowAlert', 'v2SendAIprompt', 'v2RunLLM', 'v2AxLLM', 'v2ImgGen',
+        'v2GetAlertInput', 'v2GetAlertSelect', 'v2UpdateGUI', 'v2UpdateChatAt',
+        'v2SetRequestState', 'v2SetRequestStateRole',
+        'v2ModifyLorebook', 'v2SetLorebookActivation', 'v2SetCharacterDesc',
+        'v2SetPersonaDesc', 'v2SetReplaceGlobalNote', 'v2CreateLorebook',
+        'v2ModifyLorebookByIndex', 'v2DeleteLorebookByIndex', 'v2SetLorebookAlwaysActive',
+    ])
     arg.recursiveCount ??= 0
     char = arg.displayMode ? char : safeStructuredClone(char)
+    if(arg.target === 'background' && arg.modules){
+        Object.defineProperty(char, '__risuModules', {
+            value: arg.modules,
+            enumerable: false,
+            configurable: true,
+        })
+    }
     let varChanged = false
     let stopSending = arg.stopSending ?? false
-    const CharacterlowLevelAccess = char.lowLevelAccess ?? false
+    const CharacterlowLevelAccess = arg.target === 'background' ? false : (char.lowLevelAccess ?? false)
     let sendAIprompt = false
     const currentChat = getCurrentChat()
     let additonalSysPrompt:additonalSysPrompt = arg.additonalSysPrompt ?? {
@@ -1069,7 +1089,7 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
     const triggers = char.triggerscript.map((v) => {
         v.lowLevelAccess = CharacterlowLevelAccess
         return v
-    }).concat(getModuleTriggers())
+    }).concat(getModuleTriggers(arg.modules ? { modules: arg.modules } : undefined))
     const db = getDatabase()
     const defaultVariables = parseKeyValue(char.defaultVariables).concat(parseKeyValue(db.templateDefaultVariables))
     let chat = arg.displayMode ? arg.chat : safeStructuredClone(arg.chat ?? char.chats[char.chatPage])
@@ -1305,6 +1325,9 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
 
         for(let index = 0; index < trigger.effect.length; index++){
             const effect = trigger.effect[index]
+            if(arg.target === 'background' && backgroundBlockedEffects.has(effect.type)){
+                continue
+            }
             if(mode === 'display' && !displayAllowList.includes(effect.type)){
                 continue
             }
@@ -1385,7 +1408,10 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                             recursiveCount: arg.recursiveCount,
                             additonalSysPrompt,
                             stopSending,
-                            manualName: effect.value
+                            manualName: effect.value,
+                            displayMode: arg.displayMode,
+                            modules: arg.modules,
+                            target: arg.target,
                         })
                         if(r){
                             additonalSysPrompt = r.additonalSysPrompt
@@ -1541,6 +1567,8 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                         char: char,
                         chat: chat,
                         moduleId: trigger.moduleId,
+                        target: arg.target,
+                        modules: arg.modules,
                     })
 
                     if(triggerCodeResult.stopSending){
@@ -1785,7 +1813,10 @@ export async function runTrigger(char:character,mode:triggerMode, arg:{
                             recursiveCount: arg.recursiveCount,
                             additonalSysPrompt,
                             stopSending,
-                            manualName: effect.target
+                            manualName: effect.target,
+                            displayMode: arg.displayMode,
+                            modules: arg.modules,
+                            target: arg.target,
                         })
                         if(r){
                             additonalSysPrompt = r.additonalSysPrompt

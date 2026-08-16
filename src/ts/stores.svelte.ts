@@ -34,7 +34,10 @@ export const CharEmotion = writable({} as {[key:string]: [string, string, number
 export const ViewBoxsize = writable({ width: 12 * 16, height: 12 * 16 }); // Default width and height in pixels
 export const settingsOpen = writable(false)
 export const botMakerMode = writable(false)
-export const moduleBackgroundEmbedding = writable('')
+// The legacy renderer deliberately keeps the historical single store. The
+// fixed renderer resolves module background content directly from its render
+// context instead of reading this stale global value.
+export const legacyModuleBackgroundEmbedding = writable('')
 export const openPresetList = writable(false)
 export const presetSelectCallback = writable<((index: number) => void) | null>(null)
 export const openModelPresetList = writable(false)
