@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/pocketrisu-banner-1024.png" alt="PocketRisu — Self-hosted AI Roleplay Chat Platform" width="900" />
+  <img src="assets/pocketrisu-signal-banner.png" alt="PocketRisu-SiGNAL" width="900" />
 </p>
 
-<h1 align="center">PocketRisu — Self-hosted AI Roleplay Chat</h1>
+<h1 align="center">PocketRisu-SiGNAL — Self-hosted AI Roleplay Chat</h1>
 
 <p align="center">
   <strong>English</strong> | <a href="i18n/README.ko.md">한국어</a> | <a href="i18n/README.de.md">Deutsch</a> | <a href="i18n/README.cn.md">简体中文</a> | <a href="i18n/README.es.md">Español</a> | <a href="i18n/README.vi.md">Tiếng Việt</a> | <a href="i18n/README.zh-Hant.md">繁體中文</a>
@@ -20,7 +20,9 @@
   </a>
 </p>
 
-PocketRisu is a self-hosted AI roleplay chat platform you run on your PC or personal server and access from PC, tablet, and smartphone through a web browser.
+> **Fork notice:** PocketRisu-SiGNAL is a personal, modified fork of [PocketRisu](https://github.com/PocketRisu/PocketRisu). Fork branding updated on August 16, 2026.
+
+PocketRisu-SiGNAL is a self-hosted AI roleplay chat platform you run on your PC or personal server and access from PC, tablet, and smartphone through a web browser.
 
 <p align="center">
   <table>
