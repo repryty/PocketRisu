@@ -62,11 +62,9 @@ let specialDay = $state('')
 </script>
 
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<h2 class="text-4xl text-textcolor mb-0 mt-6 font-black relative" class:text-bordered={specialDay === 'newYear'} onclick={onClick}>
+<h2 class="text-4xl text-textcolor mb-0 mt-6 font-black relative" class:text-bordered={specialDay === 'newYear'}>
     {#if specialDay === 'midAutumn'}
-        <span class="text-amber-400">🐉PocketRisu-Sgnal🐉</span>
+        <span class="text-amber-400">🐉PocketRisu-SiGNAL🐉</span>
     {:else if specialDay === 'chuseok'}
         <div class="flex">
             <span class="text-blue-500">P</span>
@@ -79,10 +77,15 @@ let specialDay = $state('')
             <span class="text-yellow-500">i</span>
             <span class="text-white">s</span>
             <span class="text-black">u</span>
-            <span>-Sgnal</span>
+            <span>-SiGNAL</span>
         </div>
     {:else}
-        PocketRisu-Sgnal
+        <img
+            src="/pocketrisu-signal.webp"
+            alt="PocketRisu SiGNAL"
+            draggable="false"
+            class="pointer-events-none h-auto w-[min(80vw,24rem)] select-none"
+        />
     {/if}
     {#if specialDay === 'christmas'}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -112,7 +115,7 @@ let specialDay = $state('')
 
 {#if specialDay === 'nodeonlyAnniversary'}
     <h1>
-        <span class="text-2xl font-extralight italic text-amber-400 hover:text-amber-600 transition">PocketRisu-Sgnal {
+        <span class="text-2xl font-extralight italic text-amber-400 hover:text-amber-600 transition">PocketRisu-SiGNAL {
             new Date().getFullYear() - 2026
         }{getNumberPostfix(new Date().getFullYear() - 2026)} Anniversary!</span>
     </h1>

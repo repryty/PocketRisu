@@ -183,7 +183,7 @@
                             aprilFoolsPage = 0
                             aprilFools = false
                         }}>
-                            PocketRisu-Sgnal
+                            PocketRisu-SiGNAL
                         </a>
                     </p>
 

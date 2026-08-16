@@ -1,7 +1,7 @@
 <script lang="ts">
     import { DBState, selectedCharID, openPresetList, presetSelectCallback } from "src/ts/stores.svelte";
     import { language } from "src/lang";
-    import { changeToPreset, getCurrentChat } from "src/ts/storage/database.svelte";
+    import { getCurrentChat } from "src/ts/storage/database.svelte";
     import { alertConfirmMulti, alertSelect, notifySuccess } from "src/ts/alert";
     import { ChevronDownIcon, PinIcon, PinOffIcon, SlidersHorizontalIcon } from "@lucide/svelte";
     import { v4 } from "uuid";
@@ -25,16 +25,6 @@
             ? DBState.db.botPresets[boundPresetIndex]
             : DBState.db.botPresets[DBState.db.botPresetsId]
     )
-
-    // Data-sync (옵션 A): when entering a chat whose bindedBotPreset resolves
-    // to a valid preset, flip the global active preset so the rest of the
-    // codebase — which only reads db.botPresetsId — automatically uses the
-    // bound one. No-op when no binding or when already active.
-    $effect(() => {
-        if (boundPresetIndex >= 0 && DBState.db.botPresetsId !== boundPresetIndex) {
-            changeToPreset(boundPresetIndex)
-        }
-    })
 
     function bindPreset(presetIndex: number) {
         const chat = getCurrentChat()

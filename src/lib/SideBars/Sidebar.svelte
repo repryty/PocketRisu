@@ -544,12 +544,27 @@
     }
   }
 </script>
+<div
+  class="sidebar-track h-full flex flex-row shrink-0"
+  class:left-bar-collapsed={$leftBarCollapsed && !DBState.db.menuSideBar}
+  class:hidden={hidden}
+  class:flex={!hidden}
+  class:sidebar-track-open={$sideBarStore && !$sideBarClosing}
+  class:sidebar-track-close={$sideBarClosing}
+  onanimationend={(event) => {
+    // The track owns the full sidebar animation. Ignore any nested animation
+    // so the chat layout is hidden only after the whole sidebar has left.
+    if (event.target !== event.currentTarget || !$sideBarClosing) {
+      return
+    }
+    $sideBarClosing = false
+    sideBarStore.set(false)
+  }}
+>
 {#if DBState.db.menuSideBar}
 <div
-  class="h-full w-20 min-w-20 flex-col items-center bg-bgcolor text-textcolor shadow-lg relative rs-sidebar"
+  class="h-full w-20 min-w-20 shrink-0 flex-col items-center bg-bgcolor text-textcolor shadow-lg relative rs-sidebar"
   class:editMode
-  class:risu-sub-sidebar={$sideBarClosing}
-  class:risu-sub-sidebar-close={$sideBarClosing}
   class:hidden={hidden}
   class:flex={!hidden}
 >
@@ -618,11 +633,9 @@
 </div>
 {:else}
 <div
-  class="h-full w-20 min-w-20 flex-col items-center bg-bgcolor text-textcolor shadow-lg relative rs-sidebar"
+  class="h-full w-20 min-w-20 shrink-0 flex-col items-center bg-bgcolor text-textcolor shadow-lg relative rs-sidebar"
   class:max-xs:hidden={$leftBarCollapsed}
   class:editMode
-  class:risu-sub-sidebar={$sideBarClosing}
-  class:risu-sub-sidebar-close={$sideBarClosing}
   class:hidden={hidden}
   class:flex={!hidden}
 >
@@ -1076,33 +1089,19 @@
 </div>
 {/if}
 <div
-  class="setting-area h-full max-xs:relative flex-col overflow-y-auto overflow-x-hidden bg-darkbg py-6 text-textcolor max-h-full"
-  class:risu-sidebar={!$sideBarClosing}
+  class="setting-area h-full max-xs:relative shrink-0 flex-col overflow-y-auto overflow-x-hidden bg-darkbg py-6 text-textcolor max-h-full"
   class:w-96={$sideBarSize === 0}
   class:w-110={$sideBarSize === 1}
   class:w-124={$sideBarSize === 2}
   class:w-138={$sideBarSize === 3}
-  class:risu-sidebar-close={$sideBarClosing}
   class:min-w-96={!$DynamicGUI && $sideBarSize === 0}
   class:min-w-110={!$DynamicGUI && $sideBarSize === 1}
   class:min-w-124={!$DynamicGUI && $sideBarSize === 2}
   class:min-w-138={!$DynamicGUI && $sideBarSize === 3}
   class:px-2={$DynamicGUI}
   class:px-4={!$DynamicGUI}
-  class:dynamic-sidebar={$DynamicGUI}
   class:hidden={hidden}
   class:flex={!hidden}
-  onanimationend={(event) => {
-    // The sidebar contains independently animated children. Only the
-    // container's own close animation may commit the hidden state.
-    if(event.target !== event.currentTarget || !$sideBarClosing){
-      return
-    }
-    if($sideBarClosing){
-      $sideBarClosing = false
-      sideBarStore.set(false)
-    }
-  }}
 >
   <button
     class="flex w-full justify-end text-textcolor"
@@ -1205,6 +1204,8 @@
   {/if}
 </div>
 
+</div>
+
 {#if $DynamicGUI}
     <div role="button" tabindex="0" class="grow h-full min-w-12"
       class:max-xs:!min-w-8={!$leftBarCollapsed}
@@ -1231,64 +1232,57 @@
   .editMode {
     min-width: 6rem;
   }
-
-  /* Keep the flex item at its final width and move only its pixels. This
-     removes the per-frame layout/paint work caused by animating width and
-     min-width while preserving the existing animation duration and state
-     classes. */
-  .setting-area,
-  .rs-sidebar {
-    will-change: transform;
+  /* Move the fixed-width track by its negative margin. The flex item's
+     occupied space changes with it, so the chat edge and handle stay aligned
+     without ever compressing the sidebar contents. */
+  .sidebar-track {
+    --sidebar-track-width: calc(5rem + var(--sidebar-size, 24rem));
+    flex-basis: var(--sidebar-track-width);
+    width: var(--sidebar-track-width);
+    min-width: var(--sidebar-track-width);
+    margin-left: 0;
+    overflow: visible;
   }
 
-  @keyframes sidebar-transition {
+  @keyframes sidebar-track-open {
     from {
-      transform: translateX(-100%);
+      margin-left: calc(-1 * var(--sidebar-track-width));
     }
     to {
-      transform: translateX(0);
+      margin-left: 0;
     }
   }
-  @keyframes sidebar-transition-close {
+
+  @keyframes sidebar-track-close {
     from {
-      transform: translateX(0);
+      margin-left: 0;
     }
     to {
-      transform: translateX(-100%);
+      margin-left: calc(-1 * var(--sidebar-track-width));
     }
   }
-  @keyframes sidebar-transition-non-dynamic {
-    from {
-      transform: translateX(-100%);
-    }
-    to {
-      transform: translateX(0);
+
+  .sidebar-track-open,
+  .sidebar-track-close {
+    animation-duration: var(--risu-animation-speed);
+    animation-timing-function: ease;
+    animation-fill-mode: both;
+  }
+
+  .sidebar-track-open {
+    animation-name: sidebar-track-open;
+  }
+
+  .sidebar-track-close {
+    animation-name: sidebar-track-close;
+  }
+
+  @media (max-width: 25rem) {
+    .sidebar-track.left-bar-collapsed {
+      --sidebar-track-width: var(--sidebar-size, 24rem);
     }
   }
-  @keyframes sidebar-transition-close-non-dynamic {
-    from {
-      transform: translateX(0);
-    }
-    to {
-      transform: translateX(-100%);
-    }
-  }
-  @keyframes sub-sidebar-transition {
-    from {
-      transform: translateX(-100%);
-    }
-    to {
-      transform: translateX(0);
-    }
-  }
-  @keyframes sub-sidebar-transition-close {
-    from {
-      transform: translateX(0);
-    }
-    to {
-      transform: translateX(-100%);
-    }
-  }
+
   @keyframes sidebar-dark-animation{
     from {
       background-color: rgba(0,0,0,0) !important;
@@ -1306,32 +1300,6 @@
     }
   }
 
-  .risu-sidebar:not(.dynamic-sidebar) {
-    animation-name: sidebar-transition-non-dynamic;
-    animation-duration: var(--risu-animation-speed);
-  }
-  .risu-sidebar-close:not(.dynamic-sidebar) {
-    animation-name: sidebar-transition-close-non-dynamic;
-    animation-duration: var(--risu-animation-speed);
-  }
-  .risu-sidebar.dynamic-sidebar {
-    animation-name: sidebar-transition;
-    animation-duration: var(--risu-animation-speed);
-  }
-  .risu-sidebar-close.dynamic-sidebar {
-    animation-name: sidebar-transition-close;
-    animation-duration: var(--risu-animation-speed);
-  }
-
-
-  .risu-sub-sidebar {
-    animation-name: sub-sidebar-transition;
-    animation-duration: var(--risu-animation-speed);
-  }
-  .risu-sub-sidebar-close {
-    animation-name: sub-sidebar-transition-close;
-    animation-duration: var(--risu-animation-speed);
-  }
   .sidebar-dark-animation{
     animation-name: sidebar-dark-transition;
     animation-duration: var(--risu-animation-speed);
