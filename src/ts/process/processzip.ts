@@ -11,6 +11,8 @@ const CHUNK_SIZE_BYTES = 1024 * 1024; // 1MB
 
 // Queue management constants
 const MAX_CONCURRENT_ASSET_SAVES = 10;
+const MAX_ASSET_SAVE_ATTEMPTS = 3;
+const ASSET_SAVE_RETRY_DELAY_MS = 250;
 
 // HTTP status code ranges
 const HTTP_STATUS_OK_MIN = 200;
@@ -339,8 +341,16 @@ export class CharXImporter{
         file.ondata = (_err, dat, final) => this.#handleFileData(assetIndex, dat, final)
 
         // Only process files smaller than MAX_ASSET_SIZE_BYTES (50MB)
-        if(file.originalSize ?? 0 < MAX_ASSET_SIZE_BYTES){
+        // Relational operators bind tighter than `??`; keep the fallback
+        // inside the comparison or a zero-byte file would be skipped while a
+        // large file could be started unintentionally.
+        if((file.originalSize ?? 0) < MAX_ASSET_SIZE_BYTES){
             file.start()
+        } else {
+            // The ZIP header already tells us this file is too large, so do
+            // not inflate it into memory just to reject it later.
+            this.excludedFiles.push(assetIndex)
+            delete this.assetBuffers[assetIndex]
         }
     }
 
@@ -394,13 +404,16 @@ export class CharXImporter{
         try {
             await this.semaphore.acquire()
             acquired = true
-            const assetSaveId = this.skipSaving
-                ? `assets/${await hasher(asset.data)}.png`
-                : await saveAsset(asset.data)
+            const assetSaveId = await this.#saveAssetWithRetry(asset.data)
 
             this.assets[asset.id] = assetSaveId
         } catch (error) {
-            this.errors.push(error instanceof Error ? error : new Error(String(error)))
+            const cause = error instanceof Error ? error : new Error(String(error))
+            const wrapped = new Error(`Failed to save asset "${asset.id}": ${cause.message}`)
+            // Preserve the original storage/network error for diagnostics
+            // without exposing a browser-specific error shape to callers.
+            ;(wrapped as Error & { cause?: unknown }).cause = cause
+            this.errors.push(wrapped)
         } finally {
             if (acquired) {
                 this.semaphore.release()
@@ -409,6 +422,43 @@ export class CharXImporter{
             this.onProgress?.(this.totalCompleted, this.totalEnqueued)
             this.#checkCompletion()
         }
+    }
+
+    /**
+     * Saves one asset, retrying only failures that are likely to be transient
+     * (network errors, rate limits, and server-side failures). A failed HTTP
+     * response is retried safely because assets are content-addressed.
+     */
+    async #saveAssetWithRetry(data: Uint8Array): Promise<string> {
+        let lastError: unknown
+        for (let attempt = 0; attempt < MAX_ASSET_SAVE_ATTEMPTS; attempt++) {
+            try {
+                return this.skipSaving
+                    ? `assets/${await hasher(data)}.png`
+                    : await saveAsset(data)
+            } catch (error) {
+                lastError = error
+                if (attempt + 1 >= MAX_ASSET_SAVE_ATTEMPTS || !this.#isRetryableAssetError(error)) {
+                    break
+                }
+                await sleep(ASSET_SAVE_RETRY_DELAY_MS * (attempt + 1))
+            }
+        }
+
+        throw lastError instanceof Error ? lastError : new Error(String(lastError))
+    }
+
+    #isRetryableAssetError(error: unknown): boolean {
+        const status = typeof (error as { status?: unknown })?.status === 'number'
+            ? (error as { status: number }).status
+            : undefined
+        if (status !== undefined) {
+            return status === 408 || status === 425 || status === 429 || status >= 500
+        }
+
+        if (error instanceof TypeError) return true
+        const message = error instanceof Error ? error.message : String(error)
+        return /network|fetch|timeout|temporar|busy|locked/i.test(message)
     }
 
     /**

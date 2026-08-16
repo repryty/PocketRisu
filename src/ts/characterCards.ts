@@ -83,6 +83,13 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
         const importer = new CharXImporter()
         importer.alertInfo = true
         await importer.parse(f.data)
+        // CharXImporter saves its assets in the background after parse().
+        // Finish those writes before doing any follow-up import work. In
+        // particular, readModule() uploads module assets too; running both
+        // queues at once can overload the NodeOnly write path and make every
+        // character asset fail.
+        await importer.done()
+
         const cardData = importer.cardData
         if(!cardData){
             alertError(language.errors.noData)
@@ -93,6 +100,7 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
             alertError(language.errors.noData)
             return
         }
+
         let lorebook:loreBook[] = null
         if(importer.moduleData){
             const md = await readModule(Buffer.from(importer.moduleData))
@@ -104,7 +112,6 @@ export async function importCharacterProcess<T extends boolean = false>(f:{
                 lorebook = md.lorebook
             }
         }
-        await importer.done()
         let v = await importCharacterCardSpec(card, undefined, 'normal', importer.assets, lorebook, f.returnCharacter)
         if(f.returnCharacter){
             return v as any

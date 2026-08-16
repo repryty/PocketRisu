@@ -253,11 +253,28 @@ export class NodeStorage{
             throw new ConflictError(data.error, data.currentEtag)
         }
         if(da.status < 200 || da.status >= 300){
-            throw "setItem Error"
+            // Keep the status and server response attached to the error. The
+            // CharX importer can then distinguish transient 5xx/network
+            // failures from a 423 session hand-off, instead of collapsing all
+            // failed asset writes into an opaque "setItem Error".
+            const bodyText = await da.text().catch(() => '')
+            let bodyMessage = ''
+            try {
+                const body = JSON.parse(bodyText)
+                if (typeof body?.error === 'string') bodyMessage = body.error
+            } catch {
+                // Some proxies return plain text for an error response.
+            }
+            const detail = bodyMessage || bodyText.trim() || da.statusText || 'request failed'
+            const error = new Error(`setItem failed (${da.status}): ${detail}`)
+            ;(error as Error & { status?: number }).status = da.status
+            throw error
         }
         const data = await da.json()
         if(data.error){
-            throw data.error
+            const error = new Error(String(data.error))
+            ;(error as Error & { status?: number }).status = da.status
+            throw error
         }
         const nextEtag = data.etag as string | undefined
         if (key === 'database/database.bin' && nextEtag) {
