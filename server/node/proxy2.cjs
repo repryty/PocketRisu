@@ -182,13 +182,28 @@ async function handleProxy2(req, res, opts) {
     let abortReason = null
     let timer = null
 
+    // Detect a *premature* downstream disconnect through the RESPONSE, not the
+    // request. Node's http.IncomingMessage (req) emits 'close' as soon as the
+    // incoming request body has been fully read — for a POST that happens long
+    // before the upstream response arrives, so wiring the upstream abort to
+    // req('close') aborted every slow-upstream POST as a false "client
+    // disconnect". The ServerResponse (res) only emits 'close' when the
+    // response itself is closed: either after normal completion OR when the
+    // client connection is torn down before the response finishes. The guard
+    // below distinguishes those two — a normal completed response has already
+    // called res.end() (writableEnded) and/or been marked proxyFinished, so its
+    // late 'close' is ignored; only a close while the response is still in
+    // flight aborts the upstream fetch.
     const onClientClose = () => {
-        if (proxyFinished) return
+        // A normal completed response also emits 'close' on res. Only a close
+        // before the response finished is a real client disconnect.
+        if (proxyFinished || res.writableEnded) return
+
         clientDisconnected = true
         abortReason = 'client-disconnect'
         try { controller.abort(new Error('client disconnected')) } catch { /* already aborted */ }
     }
-    req.on('close', onClientClose)
+    res.on('close', onClientClose)
 
     if (timeoutMs && timeoutMs > 0) {
         timer = setTimeout(() => {
@@ -200,7 +215,7 @@ async function handleProxy2(req, res, opts) {
     const cleanup = () => {
         proxyFinished = true
         if (timer) { clearTimeout(timer); timer = null }
-        try { req.removeListener('close', onClientClose) } catch { /* ignore */ }
+        try { res.removeListener('close', onClientClose) } catch { /* ignore */ }
     }
 
     const emit = (level, msg, extra) => {

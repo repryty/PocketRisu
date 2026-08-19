@@ -30,9 +30,11 @@ interface UpstreamBehavior {
     body: string
     chunks: string[]        // for stream mode
     chunkDelayMs: number
+    delayMs: number         // delay before responding in the ok/default branch
     hits: number
     closed: boolean
     receivedBody: Buffer | null
+    aborted: boolean        // set if the upstream socket was destroyed mid-response
 }
 
 describe('proxy2 server transport', () => {
@@ -41,6 +43,10 @@ describe('proxy2 server transport', () => {
     let upstreamServer: http.Server
     let upstreamUrl: string
     let upstream: UpstreamBehavior
+    // Captured server-side req of the most recent /proxy2 request, so a test can
+    // deterministically drive IncomingMessage lifecycle events (e.g. emit
+    // 'close') at a chosen moment — see the delayed-POST regression test.
+    let lastReq: any
     const logLines: string[] = []
     const logger = {
         info: (...a: any[]) => { logLines.push(['INFO', ...a].join(' ')) },
@@ -56,8 +62,10 @@ describe('proxy2 server transport', () => {
             body: 'hello-upstream',
             chunks: [],
             chunkDelayMs: 80,
+            delayMs: 0,
             hits: 0,
             closed: false,
+            aborted: false,
             receivedBody: null,
         } as UpstreamBehavior, over)
     }
@@ -67,6 +75,8 @@ describe('proxy2 server transport', () => {
         app.use(express.json({ limit: '10mb' }))
         app.use(express.text({ limit: '10mb', type: 'text/*' }))
         app.use(express.raw({ type: '*/*', limit: '10mb' }))
+        // Capture the server-side req for tests that drive lifecycle events.
+        app.use((req: any, _res: any, next: any) => { lastReq = req; next() })
         registerProxy2Routes(app, { checkAuth: stubAuth, logger: logger as any, authCodePath: '' })
         appServer = http.createServer(app)
         base = `http://127.0.0.1:${await listen(appServer)}`
@@ -79,6 +89,12 @@ describe('proxy2 server transport', () => {
             req.on('end', async () => {
                 upstream.receivedBody = Buffer.concat(parts)
                 res.on('close', () => { upstream.closed = true })
+                // The proxy aborting its upstream fetch destroys this socket. Track
+                // it so the delayed-POST test can prove the upstream was NOT torn
+                // down on a normal request whose body has already been received.
+                req.socket?.once?.('close', () => {
+                    if (!res.writableEnded) upstream.aborted = true
+                })
 
                 if (upstream.mode === 'hang') {
                     // Never respond. Holds the socket open until aborted/closed.
@@ -104,6 +120,10 @@ describe('proxy2 server transport', () => {
                     res.end()
                     return
                 }
+                // Default ok branch: optionally hold the connection open *after* the
+                // request body has been fully received but before responding, to
+                // model a slow upstream model response.
+                if (upstream.delayMs > 0) await sleep(upstream.delayMs)
                 res.writeHead(upstream.status, { 'content-type': 'text/plain' })
                 res.end(upstream.body)
             })
@@ -211,6 +231,45 @@ describe('proxy2 server transport', () => {
         const data = await res.json()
         expect(data.code).toBe('PROXY_UPSTREAM_NETWORK_ERROR')
         expect(upstream.hits).toBe(1)
+    })
+
+    // Regression: a normal POST whose incoming request body has completed but
+    // whose upstream response is still in flight MUST NOT be treated as a client
+    // disconnect. The previous handler wired the upstream abort to req('close'),
+    // and Node's http.IncomingMessage emits 'close' when the request body has
+    // been fully read — which for a POST happens while the upstream model
+    // response is still pending, so the upstream fetch was aborted and the AI
+    // request failed.
+    //
+    // The false abort is tick-timing-dependent in an integration test (Express
+    // buffers the body, the handler is microtask-deferred, so the automatic
+    // req 'close' can race past the listener), so this test drives the event
+    // deterministically: it emits 'close' on the captured server-side req AFTER
+    // the upstream fetch has started, exactly modeling "body fully received,
+    // socket still open, upstream still pending." The buggy req.on('close')
+    // handler aborts on this; the fixed res.on('close') handler must not.
+    it('a normal delayed POST is not interpreted as a client disconnect', async () => {
+        resetUpstream({ mode: 'ok', delayMs: 400, status: 200, body: 'delayed-ok' })
+        const fetchPromise = proxyPost({ prompt: 'slow-request' })
+        // Let the handler reach the upstream fetch and attach its listeners.
+        await sleep(120)
+        // The incoming request body has now been fully received — fire the
+        // IncomingMessage 'close' event while the upstream is still pending.
+        lastReq?.emit?.('close')
+        const res = await fetchPromise
+        // The response must succeed — the upstream fetch was not aborted.
+        expect(res.status).toBe(200)
+        expect(await readText(res)).toBe('delayed-ok')
+        // Upstream received the full body.
+        expect(upstream.receivedBody?.toString()).toBe(JSON.stringify({ prompt: 'slow-request' }))
+        // The upstream connection was NOT torn down mid-response (no abort).
+        expect(upstream.aborted).toBe(false)
+        // Exactly one upstream request — no retry on a normal POST.
+        expect(upstream.hits).toBe(1)
+        // The false-disconnect path must not have been taken.
+        const dump = logLines.join('\n')
+        expect(dump).not.toContain('clientClosed=1')
+        expect(dump).not.toContain('client-disconnected')
     })
 
     // (server variant) timeout stops retries immediately → 504.

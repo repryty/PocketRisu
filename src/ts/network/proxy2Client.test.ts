@@ -3,6 +3,7 @@ import {
     proxy2ClientTransport,
     proxy2IsGatewayHtml,
     proxy2SanitizedGateway,
+    proxy2ResponseToGlobalFetchResult,
     type Proxy2Fetch,
 } from './proxy2Client'
 
@@ -309,5 +310,139 @@ describe('proxy2ClientTransport', () => {
             expect(await r.text()).toBe('ok')
             expect(calls).toBe(2)
         })
+    })
+})
+
+// A Cloudflare-style 502 page that does NOT start with `<!DOCTYPE` (lowercase
+// or leading whitespace / <html> first). The old fetchWithProxy only guarded
+// `text.startsWith('<!DOCTYPE')` (case-sensitive, prefix-only), so a page like
+// this leaked through as a full HTML document in the application error string.
+// The shared transport catches it via content-type + CF markers instead.
+const CF_502_HTML = '<html><head><title>502 Bad Gateway</title></head><body>cf-ray: 7a1b-foo cloudflare</body></html>'
+
+describe('proxy2ResponseToGlobalFetchResult (GlobalFetchResult converter)', () => {
+    it('converts a JSON success into {ok, data, headers, status}', async () => {
+        const r = new Response('{"hi":1}', { status: 200, headers: { 'content-type': 'application/json', 'x-risu-proxy-request-id': 'rid' } })
+        const g = await proxy2ResponseToGlobalFetchResult(r)
+        expect(g.ok).toBe(true)
+        expect(g.status).toBe(200)
+        expect(g.data).toEqual({ hi: 1 })
+        expect(g.headers['x-risu-proxy-request-id']).toBe('rid')
+    })
+
+    it('returns a Uint8Array for rawResponse and preserves status', async () => {
+        const r = new Response(new Uint8Array([1, 2, 3]), { status: 200 })
+        const g = await proxy2ResponseToGlobalFetchResult(r, { rawResponse: true })
+        expect(g.ok).toBe(true)
+        expect(g.data instanceof Uint8Array).toBe(true)
+        expect(Array.from(g.data as Uint8Array)).toEqual([1, 2, 3])
+    })
+
+    it('passes a transport-sanitized gateway response through as the short message', async () => {
+        // The transport replaces CF HTML with proxy2SanitizedGateway(...); the
+        // converter must carry that short text through, not re-dump HTML.
+        const sanitized = proxy2SanitizedGateway(502, 'rid-9', 2)
+        const g = await proxy2ResponseToGlobalFetchResult(sanitized)
+        expect(g.ok).toBe(false)
+        expect(g.status).toBe(502)
+        expect(g.data).toContain('PocketRisu proxy gateway error (502)')
+        expect(g.data).not.toContain('<html')
+        expect(g.headers['x-risu-proxy-retries']).toBe('2')
+    })
+
+    it('defense-in-depth: a non-gateway 200 HTML page becomes a readable error, not raw HTML', async () => {
+        const r = new Response('<!DOCTYPE html><html>oops</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+        const g = await proxy2ResponseToGlobalFetchResult(r)
+        // Not JSON → treated as an error (matches legacy fetchWithProxy), but a
+        // readable message rather than a raw HTML document dumped in the UI.
+        expect(g.ok).toBe(false)
+        expect(g.status).toBe(200)
+        expect(g.data).toBe('Responded HTML. Is your URL, API key, and password correct?')
+    })
+})
+
+// Tests 5 + 6: both main PocketRisu request APIs go through ONE /proxy2
+// transport. fetchNative → fetchViaProxy2 returns the Response; globalFetch /
+// fetchWithProxy converts that Response into a GlobalFetchResult. Both paths
+// share proxy2ClientTransport, so gateway HTML can never reach a caller.
+describe('shared /proxy2 transport — fetchNative and globalFetch paths', () => {
+    const buildHeaders = async () => ({ 'risu-url': 'enc' })
+
+    // 5. fetchNative proxy path: the Response handed back to streaming callers
+    // must never expose a Cloudflare HTML page.
+    it('fetchNative path: 502 HTML is sanitized in the returned Response', async () => {
+        const { fn, calls } = makeFetchFn([
+            { status: 502, contentType: 'text/html', body: CF_502_HTML, requestId: 'r1' },
+            { status: 502, contentType: 'text/html', body: CF_502_HTML, requestId: 'r2' },
+            { status: 502, contentType: 'text/html', body: CF_502_HTML, requestId: 'r3' },
+        ])
+        const r = await proxy2ClientTransport({
+            fetchFn: fn, method: 'POST', buildHeaders, backoffMs: [1, 1],
+        })
+        expect(r.status).toBe(502)
+        const text = await r.text()
+        expect(text).toContain('PocketRisu proxy gateway error (502)')
+        expect(text).not.toContain('<html')
+        expect(text).not.toContain('cloudflare')
+        // POST is not retried even on gateway HTML.
+        expect(calls.count).toBe(1)
+    })
+
+    // 6. globalFetch / fetchWithProxy path (MANDATORY). This is the exact
+    // composition fetchWithProxy now uses: the shared transport (retry + CF
+    // sanitization) followed by proxy2ResponseToGlobalFetchResult. If
+    // fetchWithProxy bypassed the shared transport and called fetch('/proxy2')
+    // directly with only the old `text.startsWith('<!DOCTYPE')` guard, this
+    // CF page (no DOCTYPE prefix) would surface as raw HTML and the assertion
+    // against '<html'/cloudflare would fail.
+    it('globalFetch path: POST 502 HTML becomes a sanitized GlobalFetchResult with one call', async () => {
+        const { fn, calls } = makeFetchFn([
+            { status: 502, contentType: 'text/html', body: CF_502_HTML, requestId: 'r1' },
+        ])
+        const response = await proxy2ClientTransport({
+            fetchFn: fn, method: 'POST', buildHeaders, backoffMs: [1, 1],
+        })
+        const g = await proxy2ResponseToGlobalFetchResult(response)
+        expect(g.ok).toBe(false)
+        expect(g.status).toBe(502)
+        // Short sanitized error — never the full Cloudflare page.
+        expect(String(g.data)).toContain('PocketRisu proxy gateway error (502)')
+        expect(String(g.data)).not.toContain('<html')
+        expect(String(g.data)).not.toContain('cloudflare')
+        // POST must not be replayed.
+        expect(calls.count).toBe(1)
+        // Useful metadata preserved.
+        expect(g.headers['x-risu-proxy-request-id']).toBe('r1')
+        expect(g.headers['x-risu-proxy-retries']).toBe('0')
+    })
+
+    // 7. GET gateway retry still works through the globalFetch composition.
+    it('globalFetch path: GET 502 HTML retries then succeeds', async () => {
+        const { fn, calls } = makeFetchFn([
+            { status: 502, contentType: 'text/html', body: CF_502_HTML, requestId: 'r1' },
+            { status: 200, body: '{"ok":true}', contentType: 'application/json', requestId: 'r2' },
+        ])
+        const response = await proxy2ClientTransport({
+            fetchFn: fn, method: 'GET', buildHeaders, backoffMs: [1, 1],
+        })
+        const g = await proxy2ResponseToGlobalFetchResult(response)
+        expect(g.ok).toBe(true)
+        expect(g.status).toBe(200)
+        expect(g.data).toEqual({ ok: true })
+        expect(calls.count).toBe(2)
+    })
+
+    it('globalFetch path: a JSON gateway error (PocketRisu controlled) is passed through unbuffered-style', async () => {
+        const { fn, calls } = makeFetchFn([
+            { status: 502, contentType: 'application/json', body: '{"code":"PROXY_UPSTREAM_NETWORK_ERROR"}', requestId: 'r1' },
+        ])
+        const response = await proxy2ClientTransport({
+            fetchFn: fn, method: 'POST', buildHeaders, backoffMs: [1, 1],
+        })
+        const g = await proxy2ResponseToGlobalFetchResult(response)
+        expect(g.status).toBe(502)
+        expect(g.data).toEqual({ code: 'PROXY_UPSTREAM_NETWORK_ERROR' })
+        // JSON controlled errors are not mistaken for Cloudflare HTML.
+        expect(calls.count).toBe(1)
     })
 })

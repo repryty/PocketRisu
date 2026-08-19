@@ -72,6 +72,54 @@ export function proxy2SanitizedGateway(status: number, requestId: string, retrie
     })
 }
 
+// The GlobalFetchResult shape returned by globalFetch / fetchWithProxy. Kept
+// here (not imported from globalApi.svelte.ts) so this module stays pure and
+// unit-testable without dragging in the entire svelte/graphical dependency
+// graph. The shape is a structural match of GlobalFetchResult.
+export interface Proxy2GlobalFetchResult {
+    ok: boolean
+    data: any
+    headers: { [key: string]: string }
+    status: number
+}
+
+// Convert a /proxy2 Response into the GlobalFetchResult shape that
+// globalFetch / fetchWithProxy return. The Response has already been through
+// the transport (retry + gateway-HTML sanitization), so a Cloudflare 502/503/
+// 504 HTML page has already been replaced with a short "PocketRisu proxy
+// gateway error (NNN)" plain-text body — it can never reach this converter as
+// raw HTML. The DOCTYPE guard below is defense-in-depth for any *other*
+// non-gateway HTML that slips through (e.g. a 200 HTML page from a mis-targeted
+// URL), not for gateway pages.
+//
+// Pure on purpose so the globalFetch sanitization path is unit-testable in
+// isolation alongside the transport.
+export async function proxy2ResponseToGlobalFetchResult(
+    response: Response,
+    opts: { rawResponse?: boolean } = {},
+): Promise<Proxy2GlobalFetchResult> {
+    const isSuccess = response.ok && response.status >= 200 && response.status < 300
+    const headers: { [key: string]: string } = {}
+    response.headers.forEach((v, k) => { headers[k] = v })
+    if (opts.rawResponse) {
+        const data = new Uint8Array(await response.arrayBuffer())
+        return { ok: isSuccess, data, headers, status: response.status }
+    }
+    const text = await response.text()
+    try {
+        return { ok: isSuccess, data: JSON.parse(text), headers, status: response.status }
+    } catch {
+        // Gateway HTML was already sanitized by the transport; this branch now
+        // only fires for non-JSON, non-gateway bodies. Keep the historical
+        // DOCTYPE guard so a stray 200 HTML page still becomes a readable error
+        // instead of a raw document dumped into the UI.
+        const errorMsg = text.startsWith('<!DOCTYPE')
+            ? "Responded HTML. Is your URL, API key, and password correct?"
+            : text
+        return { ok: false, data: errorMsg, headers, status: response.status }
+    }
+}
+
 function isAbortError(e: unknown, signal?: AbortSignal): boolean {
     if (signal?.aborted) return true
     return e instanceof DOMException && e.name === 'AbortError'
