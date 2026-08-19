@@ -222,4 +222,92 @@ describe('proxy2ClientTransport', () => {
         expect(seen[0]['x-call']).toBe('1')
         expect(seen[2]['x-call']).toBe('3')
     })
+
+    // Regression: production injects the browser-native fetch into the transport
+    // as a detached callback (fetchFn: fetch). On browsers whose Window.fetch is
+    // a WebIDL interface method, calling it without a Window receiver throws
+    // "'fetch' called on an object that does not implement interface Window"
+    // before /proxy2 is ever requested. The ordinary fake functions used by the
+    // tests above are plain closures that never inspect `this`, so they cannot
+    // detect this class of receiver-binding regression. This block models a
+    // WebIDL-style method that throws unless invoked on its owning interface,
+    // and verifies the production adapter form — an arrow wrapper that re-roots
+    // the call onto the interface object — preserves the receiver.
+    describe('receiver binding (WebIDL-style native methods)', () => {
+        // A window-like interface whose `fetch` is a WebIDL-style method: it
+        // rejects any `this` that is not the interface instance, mirroring how
+        // Window.fetch behaves in browsers that enforce interface receivers.
+        function makeWindowLike() {
+            const win = {
+                fetch(_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> {
+                    if (this !== win) {
+                        throw new TypeError(
+                            "'fetch' called on an object that does not implement interface Window"
+                        )
+                    }
+                    return Promise.resolve(new Response('ok', {
+                        status: 200,
+                        headers: { 'content-type': 'text/plain' },
+                    }))
+                },
+            }
+            return win
+        }
+        const buildHeaders = async () => ({ 'risu-url': 'enc' })
+
+        it('reproduces the regression when the native method is passed detached', async () => {
+            const win = makeWindowLike()
+            // `fetchFn: fetch` form — `this` is lost when the transport invokes
+            // it as a plain function call (opts.fetchFn(...)).
+            await expect(proxy2ClientTransport({
+                fetchFn: win.fetch as Proxy2Fetch,
+                method: 'POST', buildHeaders,
+            })).rejects.toThrow(/does not implement interface Window/)
+        })
+
+        it('preserves the receiver when the adapter re-roots fetch onto window', async () => {
+            const win = makeWindowLike()
+            // Production adapter form: (input, init) => window.fetch(input, init).
+            // The member access re-binds the receiver to `win` on every call.
+            const r = await proxy2ClientTransport({
+                fetchFn: (input, init) => win.fetch(input, init),
+                method: 'POST', buildHeaders,
+            })
+            expect(r.status).toBe(200)
+            expect(await r.text()).toBe('ok')
+        })
+
+        it('preserves the receiver across retries (gateway-HTML path)', async () => {
+            // The receiver must survive the retry loop too: each attempt
+            // re-invokes fetchFn, so a detached method would throw on retry.
+            const win = makeWindowLike()
+            const realFetch = win.fetch.bind(win)
+            let calls = 0
+            const winWithRetry: typeof win = {
+                fetch(input, init) {
+                    if (this !== winWithRetry) {
+                        throw new TypeError(
+                            "'fetch' called on an object that does not implement interface Window"
+                        )
+                    }
+                    calls++
+                    // First call: a Cloudflare-style 502 HTML page. Second: ok.
+                    if (calls === 1) {
+                        return Promise.resolve(new Response('<!DOCTYPE html>cloudflare', {
+                            status: 502,
+                            headers: { 'content-type': 'text/html', 'x-risu-proxy-request-id': 'r1' },
+                        }))
+                    }
+                    return realFetch(input, init)
+                },
+            }
+            const r = await proxy2ClientTransport({
+                fetchFn: (input, init) => winWithRetry.fetch(input, init),
+                method: 'GET', buildHeaders, backoffMs: [1, 1],
+            })
+            expect(r.status).toBe(200)
+            expect(await r.text()).toBe('ok')
+            expect(calls).toBe(2)
+        })
+    })
 })

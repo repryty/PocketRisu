@@ -2155,7 +2155,13 @@ async function fetchViaProxy2(
     // refresh between attempts) so this module owns auth/DB wiring while the
     // transport owns retry + gateway-HTML sanitization + streaming preservation.
     return proxy2ClientTransport({
-        fetchFn: fetch,
+        // Bind native fetch to window: passing `fetch` directly detaches it from
+        // its Window receiver, and on browsers whose Window.fetch is a WebIDL
+        // interface method it throws "'fetch' called on an object that does not
+        // implement interface Window" before /proxy2 is ever requested. The
+        // arrow wrapper keeps the Window `this` binding intact regardless of
+        // how opts.fetchFn(...) later invokes it.
+        fetchFn: (input, init) => window.fetch(input, init),
         method: arg.method ?? 'POST',
         signal: arg.signal,
         body: realBody as BodyInit | undefined,
