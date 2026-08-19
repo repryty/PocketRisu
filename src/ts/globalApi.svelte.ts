@@ -2139,35 +2139,40 @@ async function fetchNativeRaw(url: string, arg: FetchNativeArgs, hooks?: {
 
 const defaultProxyJobHeartbeatSec = 15
 
+// /proxy2 client transport (retry + gateway-HTML sanitization) lives in the
+// pure, testable network/proxy2Client module; fetchViaProxy2 injects the
+// real fetch and the auth-bearing header builder.
+import { proxy2ClientTransport } from "./network/proxy2Client"
+
 async function fetchViaProxy2(
     url: string,
     headers: Record<string, string>,
     realBody: Uint8Array | undefined,
     arg: { method?: string, signal?: AbortSignal, useRisuTk?: boolean, requestTimeoutMs?: number }
 ): Promise<Response> {
-    const proxyHeaders: Record<string, string> = {
-        "risu-header": encodeURIComponent(JSON.stringify(headers)),
-        "risu-url": encodeURIComponent(url),
-        "risu-auth": await forageStorage.createAuth(),
-        ...(arg.useRisuTk ? { "x-risu-tk": "use" } : {}),
-        ...(arg.requestTimeoutMs && { "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString() }),
-        ...(DBState?.db?.requestLocation ? { "risu-location": DBState.db.requestLocation } : {}),
-    }
-
-    if (realBody) {
-        proxyHeaders["Content-Type"] = headers["Content-Type"] ?? headers["content-type"] ?? "application/json"
-    }
-
-    const r = await fetch(`/proxy2`, {
-        body: realBody as any,
-        headers: proxyHeaders,
-        method: arg.method,
-        signal: arg.signal
-    })
-
-    return new Response(r.body, {
-        headers: r.headers,
-        status: r.status
+    // Delegates to the pure, testable transport in network/proxy2Client.ts.
+    // The header builder is injected (it carries the risu-auth token, which may
+    // refresh between attempts) so this module owns auth/DB wiring while the
+    // transport owns retry + gateway-HTML sanitization + streaming preservation.
+    return proxy2ClientTransport({
+        fetchFn: fetch,
+        method: arg.method ?? 'POST',
+        signal: arg.signal,
+        body: realBody as BodyInit | undefined,
+        buildHeaders: async () => {
+            const proxyHeaders: Record<string, string> = {
+                "risu-header": encodeURIComponent(JSON.stringify(headers)),
+                "risu-url": encodeURIComponent(url),
+                "risu-auth": await forageStorage.createAuth(),
+                ...(arg.useRisuTk ? { "x-risu-tk": "use" } : {}),
+                ...(arg.requestTimeoutMs && { "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString() }),
+                ...(DBState?.db?.requestLocation ? { "risu-location": DBState.db.requestLocation } : {}),
+            }
+            if (realBody) {
+                proxyHeaders["Content-Type"] = headers["Content-Type"] ?? headers["content-type"] ?? "application/json"
+            }
+            return proxyHeaders
+        },
     })
 }
 

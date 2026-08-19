@@ -2515,187 +2515,11 @@ async function checkAuth(req, res, returnOnlyStatus = false, {allowExpired = fal
     }
 }
 
-const reverseProxyFunc = async (req, res, next) => {
-    if(!await checkAuth(req, res)){
-        return;
-    }
-    
-    const urlParam = req.headers['risu-url'] ? decodeURIComponent(req.headers['risu-url']) : req.query.url;
-
-    if (!urlParam) {
-        res.status(400).send({
-            error:'URL has no param'
-        });
-        return;
-    }
-    const timeoutMs = getRequestTimeoutMs(req.headers['risu-timeout-ms']);
-    const timeout = createTimeoutController(timeoutMs);
-    let originalResponse;
-    try {
-    const header = req.headers['risu-header'] ? JSON.parse(decodeURIComponent(req.headers['risu-header'])) : req.headers;
-    if (req.headers['x-risu-tk'] && !header['x-risu-tk']) {
-        header['x-risu-tk'] = req.headers['x-risu-tk'];
-    }
-    if (req.headers['risu-location'] && !header['risu-location']) {
-        header['risu-location'] = req.headers['risu-location'];
-    }
-    if(!header['x-forwarded-for']){
-        header['x-forwarded-for'] = req.ip
-    }
-
-    if(req.headers['authorization']?.startsWith('X-SERVER-REGISTER')){
-        if(!existsSync(authCodePath)){
-            delete header['authorization']
-        }
-        else{
-            const authCode = await fs.readFile(authCodePath, {
-                encoding: 'utf-8'
-            })
-            header['authorization'] = `Bearer ${authCode}`
-        }
-    }
-        let requestBody = undefined;
-        if (req.method !== 'GET' && req.method !== 'HEAD') {
-            if (Buffer.isBuffer(req.body) || typeof req.body === 'string') {
-                requestBody = req.body;
-            }
-            else if (req.body !== undefined) {
-                requestBody = JSON.stringify(req.body);
-            }
-        }
-        // make request to original server
-        originalResponse = await fetch(urlParam, {
-            method: req.method,
-            headers: header,
-            body: requestBody,
-            signal: timeout.signal
-        });
-        // get response body as stream
-        const originalBody = originalResponse.body;
-        // get response headers
-        const head = new Headers(originalResponse.headers);
-        head.delete('content-security-policy');
-        head.delete('content-security-policy-report-only');
-        head.delete('clear-site-data');
-        head.delete('Cache-Control');
-        head.delete('Content-Encoding');
-        // Node's fetch already decompressed the body, so the upstream
-        // (compressed) Content-Length no longer matches and would truncate the
-        // response. Drop it and let the body stream out chunked.
-        head.delete('Content-Length');
-        const headObj = {};
-        for (let [k, v] of head) {
-            headObj[k] = v;
-        }
-        // send response headers to client
-        res.header(headObj);
-        // send response status to client
-        res.status(originalResponse.status);
-        // send response body to client
-        await pipeline(originalResponse.body, res);
-
-
-    }
-    catch (err) {
-        if (err?.name === 'AbortError') {
-            if (!res.headersSent) {
-                res.status(504).send({
-                    error: timeoutMs
-                        ? `Proxy request timed out after ${timeoutMs}ms`
-                        : 'Proxy request aborted'
-                });
-            } else {
-                res.end();
-            }
-            return;
-        }
-        // Pass the actual `err` (not err.cause) so logger.* can tag it and the
-        // Express error middleware knows to skip. The cause chain is preserved
-        // via formatErrorWithCause in normalizeArgs.
-        logger.error(`[Proxy] ${req.method} ${urlParam}`, err);
-        next(err);
-        return;
-    } finally {
-        timeout.cleanup();
-    }
-}
-
-const reverseProxyFunc_get = async (req, res, next) => {
-    if(!await checkAuth(req, res)){
-        return;
-    }
-    
-    const urlParam = req.headers['risu-url'] ? decodeURIComponent(req.headers['risu-url']) : req.query.url;
-
-    if (!urlParam) {
-        res.status(400).send({
-            error:'URL has no param'
-        });
-        return;
-    }
-    const timeoutMs = getRequestTimeoutMs(req.headers['risu-timeout-ms']);
-    const timeout = createTimeoutController(timeoutMs);
-    let originalResponse;
-    try {
-    const header = req.headers['risu-header'] ? JSON.parse(decodeURIComponent(req.headers['risu-header'])) : req.headers;
-    if (req.headers['x-risu-tk'] && !header['x-risu-tk']) {
-        header['x-risu-tk'] = req.headers['x-risu-tk'];
-    }
-    if (req.headers['risu-location'] && !header['risu-location']) {
-        header['risu-location'] = req.headers['risu-location'];
-    }
-    if(!header['x-forwarded-for']){
-        header['x-forwarded-for'] = req.ip
-    }
-        // make request to original server
-        originalResponse = await fetch(urlParam, {
-            method: 'GET',
-            headers: header,
-            signal: timeout.signal
-        });
-        // get response body as stream
-        const originalBody = originalResponse.body;
-        // get response headers
-        const head = new Headers(originalResponse.headers);
-        head.delete('content-security-policy');
-        head.delete('content-security-policy-report-only');
-        head.delete('clear-site-data');
-        head.delete('Cache-Control');
-        head.delete('Content-Encoding');
-        // Node's fetch already decompressed the body, so the upstream
-        // (compressed) Content-Length no longer matches and would truncate the
-        // response. Drop it and let the body stream out chunked.
-        head.delete('Content-Length');
-        const headObj = {};
-        for (let [k, v] of head) {
-            headObj[k] = v;
-        }
-        // send response headers to client
-        res.header(headObj);
-        // send response status to client
-        res.status(originalResponse.status);
-        // send response body to client
-        await pipeline(originalResponse.body, res);
-    }
-    catch (err) {
-        if (err?.name === 'AbortError') {
-            if (!res.headersSent) {
-                res.status(504).send({
-                    error: timeoutMs
-                        ? `Proxy request timed out after ${timeoutMs}ms`
-                        : 'Proxy request aborted'
-                });
-            } else {
-                res.end();
-            }
-            return;
-        }
-        next(err);
-        return;
-    } finally {
-        timeout.cleanup();
-    }
-}
+// /proxy2 (and legacy /proxy) request handling lives in ./proxy2.cjs. It owns
+// request-id diagnostic logging, controlled JSON proxy errors, idempotent
+// upstream retry, and client-disconnect/timeout abort handling. Registered
+// after body-parsing middleware below so req.body is populated.
+const { registerProxy2Routes } = require('./proxy2.cjs')
 
 let accessTokenCache = {
     token: null,
@@ -2856,18 +2680,10 @@ async function hubProxyFunc(req, res) {
     }
 }
 
-app.get('/proxy', reverseProxyFunc_get);
-app.get('/proxy2', reverseProxyFunc_get);
-app.get('/hub-proxy/*', hubProxyFunc);
+// Hardened /proxy2 + legacy /proxy routes (logging, JSON errors, retry, abort).
+registerProxy2Routes(app, { checkAuth, logger, authCodePath })
 
-app.post('/proxy', reverseProxyFunc);
-app.post('/proxy2', reverseProxyFunc);
-app.put('/proxy', reverseProxyFunc);
-app.put('/proxy2', reverseProxyFunc);
-app.patch('/proxy', reverseProxyFunc);
-app.patch('/proxy2', reverseProxyFunc);
-app.delete('/proxy', reverseProxyFunc);
-app.delete('/proxy2', reverseProxyFunc);
+app.get('/hub-proxy/*', hubProxyFunc);
 app.post('/hub-proxy/*', hubProxyFunc);
 
 // --- Proxy Stream Job endpoints ---
