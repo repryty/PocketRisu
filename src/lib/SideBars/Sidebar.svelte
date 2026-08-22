@@ -547,6 +547,7 @@
 <div
   class="sidebar-track h-full flex flex-row shrink-0"
   class:left-bar-collapsed={$leftBarCollapsed && !DBState.db.menuSideBar}
+  class:dynamic-gui={$DynamicGUI}
   class:hidden={hidden}
   class:flex={!hidden}
   class:sidebar-track-open={$sideBarStore && !$sideBarClosing}
@@ -1244,6 +1245,26 @@
     overflow: visible;
   }
 
+  /* Standard (non-DynamicGUI) layout: on narrow screens clamp the track to the
+     viewport minus a right-side gutter so the sidebar never consumes the full
+     width and the toggle arrow always has room. min() is a no-op on desktop
+     (viewport wider than the sidebar + gutter), so the normal layout is
+     unchanged. DynamicGUI keeps its original unclamped width. */
+  .sidebar-track:not(.dynamic-gui) {
+    --sidebar-track-width: min(
+      calc(5rem + var(--sidebar-size, 24rem)),
+      100vw - var(--sidebar-gutter, 3.5rem)
+    );
+  }
+
+  /* Let the panel shrink into the clamped track instead of overflowing it.
+     On desktop the track is the sidebar's natural width, so no shrink happens;
+     the override only takes effect when the viewport forces a narrower track. */
+  .setting-area {
+    flex-shrink: 1;
+    min-width: 0;
+  }
+
   @keyframes sidebar-track-open {
     from {
       margin-left: calc(-1 * var(--sidebar-track-width));
@@ -1280,6 +1301,12 @@
   @media (max-width: 25rem) {
     .sidebar-track.left-bar-collapsed {
       --sidebar-track-width: var(--sidebar-size, 24rem);
+    }
+    .sidebar-track.left-bar-collapsed:not(.dynamic-gui) {
+      --sidebar-track-width: min(
+        var(--sidebar-size, 24rem),
+        100vw - var(--sidebar-gutter, 3.5rem)
+      );
     }
   }
 
