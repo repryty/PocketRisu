@@ -1385,40 +1385,39 @@ async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<Glob
 async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
         const started = Date.now();
-        const furl = `/proxy2`;
         arg.headers["Content-Type"] ??= arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
-        const headers = {
-            "risu-header": encodeURIComponent(JSON.stringify(arg.headers)),
-            "risu-url": encodeURIComponent(url),
-            "Content-Type": arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json",
-            ...(arg.useRisuToken && { "x-risu-tk": "use" }),
-            ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
-        };
-
-        // Add risu-auth header for Node.js server
-        headers["risu-auth"] = await forageStorage.createAuth();
-
         const body = arg.body instanceof URLSearchParams ? arg.body.toString() : JSON.stringify(arg.body);
 
-        const response = await fetch(furl, { body, headers, method: arg.method ?? "POST", signal: arg.abortSignal });
-        const isSuccess = response.ok && response.status >= 200 && response.status < 300;
+        // Route through the SAME shared /proxy2 transport as fetchViaProxy2
+        // (retry + gateway-HTML sanitization + Window.fetch binding). This is
+        // the only browser → /proxy2 implementation for the JSON/globalFetch
+        // API; previously fetchWithProxy called fetch('/proxy2') directly and
+        // could surface a full Cloudflare 502 HTML page as application error
+        // text. The transport sanitizes gateway HTML before it reaches us.
+        const response = await fetchProxy2Response({
+            url,
+            method: arg.method ?? "POST",
+            body,
+            signal: arg.abortSignal,
+            buildHeaders: async () => {
+                const proxyHeaders: Record<string, string> = {
+                    "risu-header": encodeURIComponent(JSON.stringify(arg.headers)),
+                    "risu-url": encodeURIComponent(url),
+                    "Content-Type": arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json",
+                    ...(arg.useRisuToken && { "x-risu-tk": "use" }),
+                    ...(DBState?.db?.requestLocation && { "risu-location": DBState.db.requestLocation }),
+                }
+                // Add risu-auth header for Node.js server (may refresh per attempt).
+                proxyHeaders["risu-auth"] = await forageStorage.createAuth()
+                return proxyHeaders
+            },
+        })
 
-        if (arg.rawResponse) {
-            const data = new Uint8Array(await response.arrayBuffer());
-            addFetchLogInGlobalFetch("Uint8Array Response", isSuccess, url, arg, response.status, started);
-            return { ok: isSuccess, data, headers: Object.fromEntries(response.headers), status: response.status };
-        }
-
-        const text = await response.text();
-        try {
-            const data = JSON.parse(text);
-            addFetchLogInGlobalFetch(data, isSuccess, url, arg, response.status, started);
-            return { ok: isSuccess, data, headers: Object.fromEntries(response.headers), status: response.status };
-        } catch (error) {
-            const errorMsg = text.startsWith('<!DOCTYPE') ? "Responded HTML. Is your URL, API key, and password correct?" : text;
-            addFetchLogInGlobalFetch(text, false, url, arg, response.status, started);
-            return { ok: false, data: errorMsg, headers: Object.fromEntries(response.headers), status: response.status };
-        }
+        const result = await proxy2ResponseToGlobalFetchResult(response, { rawResponse: arg.rawResponse })
+        const isSuccess = result.ok
+        const logPayload = arg.rawResponse ? "Uint8Array Response" : result.data
+        addFetchLogInGlobalFetch(logPayload, isSuccess, url, arg, result.status, started)
+        return result
     } catch (error) {
         return { ok: false, data: `${error}`, headers: {}, status: 400 };
     }
@@ -2185,35 +2184,69 @@ async function fetchNativeRaw(url: string, arg: FetchNativeArgs, hooks?: {
 
 const defaultProxyJobHeartbeatSec = 15
 
+// /proxy2 client transport (retry + gateway-HTML sanitization) lives in the
+// pure, testable network/proxy2Client module; fetchViaProxy2 injects the
+// real fetch and the auth-bearing header builder.
+import { proxy2ClientTransport, proxy2ResponseToGlobalFetchResult } from "./network/proxy2Client"
+
+// The single low-level browser → /proxy2 entry point. Both fetchViaProxy2
+// (returns the live Response for streaming callers) and fetchWithProxy
+// (converts the Response into a GlobalFetchResult for the JSON API) go through
+// this, so retry + gateway-HTML sanitization + the Window.fetch receiver
+// binding are defined exactly once. There must not be a second direct
+// fetch('/proxy2') implementation for the main request APIs.
+async function fetchProxy2Response(arg: {
+    url: string
+    method: string
+    body: BodyInit | undefined
+    signal?: AbortSignal
+    buildHeaders: () => Promise<Record<string, string>>
+}): Promise<Response> {
+    return proxy2ClientTransport({
+        // Bind native fetch to window: passing `fetch` directly detaches it from
+        // its Window receiver, and on browsers whose Window.fetch is a WebIDL
+        // interface method it throws "'fetch' called on an object that does not
+        // implement interface Window" before /proxy2 is ever requested. The
+        // arrow wrapper keeps the Window `this` binding intact regardless of
+        // how opts.fetchFn(...) later invokes it. Do NOT regress to fetchFn: fetch.
+        fetchFn: (input, init) => window.fetch(input, init),
+        method: arg.method,
+        signal: arg.signal,
+        body: arg.body,
+        buildHeaders: arg.buildHeaders,
+    })
+}
+
 async function fetchViaProxy2(
     url: string,
     headers: Record<string, string>,
     realBody: Uint8Array | undefined,
     arg: { method?: string, signal?: AbortSignal, useRisuTk?: boolean, requestTimeoutMs?: number }
 ): Promise<Response> {
-    const proxyHeaders: Record<string, string> = {
-        "risu-header": encodeURIComponent(JSON.stringify(headers)),
-        "risu-url": encodeURIComponent(url),
-        "risu-auth": await forageStorage.createAuth(),
-        ...(arg.useRisuTk ? { "x-risu-tk": "use" } : {}),
-        ...(arg.requestTimeoutMs && { "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString() }),
-        ...(DBState?.db?.requestLocation ? { "risu-location": DBState.db.requestLocation } : {}),
-    }
-
-    if (realBody) {
-        proxyHeaders["Content-Type"] = headers["Content-Type"] ?? headers["content-type"] ?? "application/json"
-    }
-
-    const r = await fetch(`/proxy2`, {
-        body: realBody as any,
-        headers: proxyHeaders,
-        method: arg.method,
-        signal: arg.signal
-    })
-
-    return new Response(r.body, {
-        headers: r.headers,
-        status: r.status
+    // Delegates to the shared low-level entry, which delegates to the pure,
+    // testable transport in network/proxy2Client.ts. The header builder is
+    // injected (it carries the risu-auth token, which may refresh between
+    // attempts) so this module owns auth/DB wiring while the transport owns
+    // retry + gateway-HTML sanitization + streaming preservation.
+    return fetchProxy2Response({
+        url,
+        method: arg.method ?? 'POST',
+        body: realBody as BodyInit | undefined,
+        signal: arg.signal,
+        buildHeaders: async () => {
+            const proxyHeaders: Record<string, string> = {
+                "risu-header": encodeURIComponent(JSON.stringify(headers)),
+                "risu-url": encodeURIComponent(url),
+                "risu-auth": await forageStorage.createAuth(),
+                ...(arg.useRisuTk ? { "x-risu-tk": "use" } : {}),
+                ...(arg.requestTimeoutMs && { "risu-timeout-ms": Math.max(1, Math.floor(arg.requestTimeoutMs)).toString() }),
+                ...(DBState?.db?.requestLocation ? { "risu-location": DBState.db.requestLocation } : {}),
+            }
+            if (realBody) {
+                proxyHeaders["Content-Type"] = headers["Content-Type"] ?? headers["content-type"] ?? "application/json"
+            }
+            return proxyHeaders
+        },
     })
 }
 
