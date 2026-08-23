@@ -6299,6 +6299,15 @@ async function getHttpsOptions() {
     }
 }
 
+function configureOriginKeepAlive(server) {
+    // Keep the origin socket alive comfortably longer than reverse proxies'
+    // idle connection timeout so a pooled request is not sent to a closing socket.
+    server.keepAliveTimeout = 30_000;
+    if ('keepAliveTimeoutBuffer' in server) {
+        server.keepAliveTimeoutBuffer = 5_000;
+    }
+}
+
 async function startServer() {
     try {
         await migrateInlaysToFilesystem();
@@ -6310,6 +6319,7 @@ async function startServer() {
         if (httpsOptions) {
             // HTTPS
             server = https.createServer(httpsOptions, app);
+            configureOriginKeepAlive(server);
             setupProxyStreamWebSocket(server);
             server.listen(port, () => {
                 console.log("[Server] HTTPS server is running.");
@@ -6318,6 +6328,7 @@ async function startServer() {
         } else {
             // HTTP
             server = http.createServer(app);
+            configureOriginKeepAlive(server);
             setupProxyStreamWebSocket(server);
             server.listen(port, () => {
                 console.log("[Server] HTTP server is running.");

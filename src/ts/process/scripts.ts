@@ -13,6 +13,7 @@ import { pluginV2 } from "../plugins/plugins.svelte";
 import { runTrigger } from "./triggers";
 import type { RenderContext } from './renderContext';
 import { safeStructuredClone } from '../polyfill';
+import { cachedRegexReplace } from './regexReplaceCache';
 
 const dreg = /{{data}}/g
 const randomness = /\|\|\|/g
@@ -100,7 +101,14 @@ function cacheScript(hash:string, result:string){
 }
 
 function getScriptCache(hash:string){
-    return processScriptCache.get(hash)
+    const cached = processScriptCache.get(hash)
+    if(cached !== undefined){
+        // Keep frequently rendered messages hot instead of evicting them in
+        // original insertion order when other chats fill the cache.
+        processScriptCache.delete(hash)
+        processScriptCache.set(hash, cached)
+    }
+    return cached
 }
 
 export function resetScriptCache(){
@@ -175,7 +183,7 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
     const scripts = (db.presetRegex ?? []).concat(char.customscript).concat(getModuleRegexScripts(scriptContext))
     const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, scriptContext)
     const cached = getScriptCache(hash)
-    if(cached){
+    if(cached !== undefined){
         return {data: cached, emoChanged: false}
     }
     
@@ -287,7 +295,7 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
                         data = parseForRender(data)
                     }
                     else{
-                        data = parseForRender(data.replace(reg, outScript))
+                        data = parseForRender(cachedRegexReplace(data, reg, outScript))
                     }
                 }
                 else{
@@ -330,7 +338,7 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
                 }
             }
             else{
-                data = parseForRender(data.replace(reg, outScript))
+                data = parseForRender(cachedRegexReplace(data, reg, outScript))
             }
         }
     }
