@@ -2,7 +2,8 @@ import DOMPurify from 'dompurify';
 import markdownit from 'markdown-it'
 import { appVer, getCurrentCharacter, getCurrentChat, getDatabase, type Database, type character, type customscript, type triggerscript } from '../storage/database.svelte';
 import { DBState, selIdState } from '../stores.svelte';
-import { aiWatermarkingLawApplies, getFileSrc } from '../globalApi.svelte';
+import { aiWatermarkingLawApplies, getFileSrc, prefetchAssetManifests, resolvePrioritizedAssetManifestNames } from '../globalApi.svelte';
+import { hydrateAssetListsForCbs } from './assetListHydration';
 import { isNodeServer } from "src/ts/platform"
 import { getChatVar, setChatVar, getGlobalChatVar } from './chatVar.svelte';
 import { processScriptFull } from '../process/scripts';
@@ -22,6 +23,7 @@ import { getModelInfo } from '../model/modellist';
 import { registerCBS, type matcherArg, type RegisterCallback } from '../cbs';
 import cssSelectorParser from 'postcss-selector-parser'
 import type { RenderContext } from '../process/renderContext';
+import { Sha256 } from '@aws-crypto/sha256-js'
 
 const markdownItOptions = {
     html: true,
@@ -449,6 +451,10 @@ type AssetPaths = {[key:string]:{
 
 let assetsCache: AssetPaths | null = null
 let emoAssetsCache: AssetPaths | null = null
+// Cache owner guard: parsing a character other than the one the cache was built
+// for (group members, previews, parses racing a selection switch) must rebuild
+// instead of reusing the previous character's assets.
+let assetsCacheCharacterId = ''
 
 function buildAssetPaths(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
     const assetPaths: AssetPaths = {}
@@ -461,10 +467,11 @@ function buildAssetPaths(charAssets: string[][], emoAssets: string[][], moduleAs
     return { assetPaths, charEmoPaths }
 }
 
-export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][]) {
+export function resetAssetsCache(charAssets: string[][], emoAssets: string[][], moduleAssets: string[][], characterId = '') {
     const paths = buildAssetPaths(charAssets, emoAssets, moduleAssets)
     assetsCache = paths.assetPaths
     emoAssetsCache = paths.charEmoPaths
+    assetsCacheCharacterId = characterId
 }
 
 $effect.root(() => {
@@ -480,7 +487,15 @@ $effect.root(() => {
         const emoAssets = char.emotionImages ?? []
         const moduleAssets = getModuleAssets()
 
-        resetAssetsCache(charAssets, emoAssets, moduleAssets)
+        resetAssetsCache(charAssets, emoAssets, moduleAssets, char.chaId)
+
+        // Warm the full-manifest cache the moment a chat opens, so message
+        // parses resolve {{img::}} names and CBS asset lists locally instead
+        // of waiting on the server mid-render.
+        prefetchAssetManifests([
+            char.additionalAssetManifest,
+            ...getModules().map((module) => module?.assetManifest),
+        ])
     })
 })
 
@@ -490,6 +505,13 @@ const videoExtensions = ['mp4', 'webm', 'avi', 'm4p', 'm4v']
 async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|character, mode:'normal'|'back', arg:{ch:number}, context?:RenderContext){
     const assetWidthString = (DBState.db.assetWidth && DBState.db.assetWidth !== -1 || DBState.db.assetWidth === 0) ? `max-width:${DBState.db.assetWidth}rem;` : ''
 
+    // Both the full-character path and the chat-render path (simple objects from
+    // createSimpleCharacter) carry chaId + asset lists, so both enforce cache
+    // ownership; group members and selection races rebuild instead of reusing
+    // the previous character's assets.
+    if (context?.target !== 'background' && (char.type === 'character' || char.type === 'simple') && (!assetsCache || !emoAssetsCache || assetsCacheCharacterId !== char.chaId)) {
+        resetAssetsCache(char.additionalAssets ?? [], char.emotionImages ?? [], getModuleAssets(), char.chaId)
+    }
     let assetPaths = assetsCache ?? {}
     let emoPaths = emoAssetsCache ?? {}
 
@@ -508,6 +530,32 @@ async function parseAdditionalAssets(data:string, char:simpleCharacterArgument|c
         resetAssetsCache(char.additionalAssets ?? [], char.emotionImages, getModuleAssets())
         assetPaths = assetsCache ?? {}
         emoPaths = emoAssetsCache ?? {}
+    }
+
+    const moduleManifests = getModules(context)
+        .map((module) => module?.assetManifest)
+        .filter((manifest) => !!manifest)
+    if (moduleManifests.length > 0 || char.additionalAssetManifest) {
+        const names = [...data.matchAll(assetRegex)]
+            .map((match) => String(match[2] ?? '').toLocaleLowerCase())
+            .filter((name) => name.length > 0)
+        if (names.length > 0) {
+            try {
+                const resolved = await resolvePrioritizedAssetManifestNames(
+                    char.additionalAssetManifest,
+                    moduleManifests,
+                    names,
+                )
+                for (const [name, hit] of Object.entries(resolved)) {
+                    // An exact manifest hit replaces whatever the cache held; a
+                    // fuzzy near-miss only fills a gap, never an inline exact match.
+                    if (hit.fuzzy) assetPaths[name] ??= { srcPaths: [hit.path] }
+                    else assetPaths[name] = { srcPaths: [hit.path] }
+                }
+            } catch (error) {
+                console.warn('[Assets] Failed to resolve parser asset manifests', error)
+            }
+        }
     }
 
     let needsSourceAccess = false
@@ -688,12 +736,80 @@ function trimmer(str:string){
     return str.trim().replace(/[_ -.]/g, '')
 }
 
-const blobUrlCache = new Map<string, { url: string; type: string }>()
+type InlayCacheEntry = { url: string; type: string; width?: number; height?: number }
+type InlayDimensions = { width: number; height: number }
+
+const blobUrlCache = new Map<string, InlayCacheEntry>()
 const inlayImageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif']
 
 /** Build a direct-serve URL for a KV key via /api/asset/ */
 function assetUrl(kvKey: string): string {
     return `/api/asset/${Buffer.from(kvKey, 'utf-8').toString('hex')}`
+}
+
+function getInlayDimensions(source: { width?: number; height?: number } | undefined): InlayDimensions | undefined {
+    const width = Math.round(source?.width ?? 0)
+    const height = Math.round(source?.height ?? 0)
+    if(width <= 0 || height <= 0) return undefined
+    return { width, height }
+}
+
+function getInlayDimensionAttributes(source: { width?: number; height?: number } | undefined): string {
+    const dimensions = getInlayDimensions(source)
+    if(!dimensions) return ''
+    return ` width="${dimensions.width}" height="${dimensions.height}"`
+}
+
+function applyInlayDimensions(img: HTMLImageElement, source: { width?: number; height?: number } | undefined) {
+    const dimensions = getInlayDimensions(source)
+    if(!dimensions) return
+    img.setAttribute('width', String(dimensions.width))
+    img.setAttribute('height', String(dimensions.height))
+}
+
+// The fast path publishes a cache entry before its dimensions arrive. Any
+// <img> rendered from that entry in the meantime — including one remounted
+// by a re-render, which never goes through the resolve queue — must be able
+// to pick the dimensions up when they land, so one pending lookup per id is
+// kept here until it settles.
+const pendingInlayDimensions = new Map<string, Promise<InlayDimensions | undefined>>()
+
+function requestInlayDimensions(ids: string[]) {
+    const missing = ids.filter((id) => !pendingInlayDimensions.has(id))
+    if(missing.length === 0) return
+    const infos = getInlayInfosBatch(missing)
+    for(const id of missing){
+        const request = infos.then((result) => {
+            const cached = blobUrlCache.get(id)
+            const dimensions = getInlayDimensions(result[id])
+            if(!cached || cached.type !== 'image' || !dimensions) return undefined
+            cached.width = dimensions.width
+            cached.height = dimensions.height
+            return dimensions
+        }).catch(() => undefined)
+        pendingInlayDimensions.set(id, request)
+        // A legacy inlay without inlay_info settles to undefined and is simply
+        // not retried: no entry, no attribute, no further requests.
+        void request.finally(() => {
+            if(pendingInlayDimensions.get(id) === request) pendingInlayDimensions.delete(id)
+        })
+    }
+}
+
+// Size an <img> from the cache now, or from the pending lookup once it lands.
+// Only an element actually showing this inlay qualifies — the marker attribute
+// is user-writable HTML, so the src must match the cached URL.
+function sizeInlayImage(img: HTMLImageElement, id: string) {
+    const cached = blobUrlCache.get(id)
+    if(cached?.type !== 'image' || img.getAttribute('src') !== cached.url) return
+    applyInlayDimensions(img, cached)
+    if(getInlayDimensions(cached)) return
+    void pendingInlayDimensions.get(id)?.then((dimensions) => {
+        const current = blobUrlCache.get(id)
+        if(dimensions && img.isConnected && !DBState.db.hideAllImages && current?.type === 'image' && img.getAttribute('src') === current.url){
+            applyInlayDimensions(img, dimensions)
+        }
+    })
 }
 
 function createMissingInlayPlaceholder(id: string): HTMLDivElement {
@@ -739,7 +855,12 @@ export function parseInlayAssets(data:string){
                         data = data.replace(inlay, '')
                         break
                     }
-                    data = data.replace(inlay, `${prefix}<img src="${url}"/>${postfix}`)
+                    // No dimensions yet but a lookup in flight: mark the
+                    // element so resolveInlayPlaceholders can reconnect it.
+                    const pending = !getInlayDimensions(cached) && pendingInlayDimensions.has(id)
+                        ? ` data-inlay-pending="${id}"`
+                        : ''
+                    data = data.replace(inlay, `${prefix}<img src="${url}"${getInlayDimensionAttributes(cached)}${pending}/>${postfix}`)
                     break
                 case 'video':
                     data = data.replace(inlay, `${prefix}<video controls><source src="${url}" type="video/mp4"></video>${postfix}`)
@@ -764,9 +885,9 @@ async function processInlayQueue() {
     while (resolveQueue.length > 0) {
         const batch = resolveQueue.splice(0, 20)
 
-        const unknownIds = batch
+        const unknownIds = Array.from(new Set(batch
             .filter(({ id }) => !blobUrlCache.has(id))
-            .map(({ id }) => id)
+            .map(({ id }) => id)))
 
         if (unknownIds.length > 0) {
             if (DBState.db.inlayImagePriority) {
@@ -774,13 +895,19 @@ async function processInlayQueue() {
                 for (const id of unknownIds) {
                     blobUrlCache.set(id, { url: assetUrl(`inlay/${id}`), type: 'image' })
                 }
+                // Dimensions are fetched without blocking the image load; the
+                // <img> elements below (and any remounted later) size
+                // themselves from the shared lookup when it lands.
+                requestInlayDimensions(unknownIds)
             } else {
                 // Accurate path: fetch type info first
                 try {
                     const infos = await getInlayInfosBatch(unknownIds)
                     for (const id of unknownIds) {
-                        const type = infos[id]?.type ?? 'image'
-                        blobUrlCache.set(id, { url: assetUrl(`inlay/${id}`), type })
+                        const info = infos[id]
+                        const type = info?.type ?? 'image'
+                        const dimensions = getInlayDimensions(info)
+                        blobUrlCache.set(id, { url: assetUrl(`inlay/${id}`), type, width: dimensions?.width, height: dimensions?.height })
                     }
                 } catch {
                     for (const id of unknownIds) {
@@ -804,6 +931,7 @@ async function processInlayQueue() {
                         if (DBState.db.hideAllImages) { el.remove(); break }
                         const img = document.createElement('img')
                         img.src = url
+                        sizeInlayImage(img, id)
                         img.style.animation = 'risu-fade-in 0.3s ease-out'
                         // Fallback for legacy inlays without inlay_info:
                         // if <img> fails, probe Content-Type and swap to video/audio
@@ -871,6 +999,12 @@ async function processInlayQueue() {
 
 export function resolveInlayPlaceholders(root: HTMLElement) {
     if (!root) return
+    // Images rendered from a cache entry whose dimensions are still loading.
+    for (const img of Array.from(root.querySelectorAll<HTMLImageElement>('img[data-inlay-pending]'))) {
+        const id = img.getAttribute('data-inlay-pending')
+        img.removeAttribute('data-inlay-pending')
+        if (id) sizeInlayImage(img, id)
+    }
     const placeholders = Array.from(root.querySelectorAll('[data-inlay-id]')) as HTMLElement[]
     if (placeholders.length === 0) return
 
@@ -895,6 +1029,7 @@ export function resolveInlayPlaceholders(root: HTMLElement) {
 export interface simpleCharacterArgument{
     type: 'simple'
     additionalAssets?: [string, string, string][]
+    additionalAssetManifest?: import('../storage/nodeStorage').AssetManifestDescriptor
     customscript: customscript[]
     chaId: string,
     virtualscript?: string
@@ -945,6 +1080,10 @@ export async function ParseMarkdown(
     } : renderContext
 
     if(char){
+        // CBS list functions are synchronous. Only when a prompt explicitly
+        // asks for a complete asset list do we hydrate the corresponding full
+        // manifests into the bounded compatibility cache.
+        await hydrateAssetListsForCbs(char, [data], context)
         data = await parseAdditionalAssets(data, char, additionalAssetMode, {
             ch: chatID
         }, context)
@@ -976,20 +1115,23 @@ export async function ParseMarkdown(
     return trimMarkdown(data, mode === 'background' ? '.risu-background-root' : '.chattext')
 }
 
+const trimPurifyConfig = {
+    ADD_TAGS: ["iframe", "style", "risu-style", "x-em", 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac', 'msqrt'],
+    ADD_ATTR: ["allow", "allowfullscreen", "frameborder", "scrolling", "risu-ctrl" ,"risu-btn", 'risu-trigger', 'risu-mark', 'risu-id', 'x-hl-lang', 'x-hl-text', 'data-inlay-id', 'data-inlay-type', 'data-inlay-pending'],
+}
+
 // LRU cache for DOMPurify + decodeStyle results.
 // Chat re-renders hit the same message text repeatedly; this avoids redundant DOM parsing.
 const trimCache = new Map<string, string>()
 const TRIM_CACHE_MAX = 200
 
 export function trimMarkdown(data:string, styleScope = '.chattext'){
+    if(!data){ return '' }
     // Include hideAllImages in cache key — DOMPurify hook rewrites <img> based on this flag
     const cacheKey = (DBState.db?.hideAllImages ? '1|' : '0|') + styleScope + '|' + data
     let cached = trimCache.get(cacheKey)
     if (cached !== undefined) return cached
-    cached = decodeStyle(DOMPurify.sanitize(data, {
-        ADD_TAGS: ["iframe", "style", "risu-style", "x-em", 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'mfrac', 'msqrt'],
-        ADD_ATTR: ["allow", "allowfullscreen", "frameborder", "scrolling", "risu-ctrl" ,"risu-btn", 'risu-trigger', 'risu-mark', 'risu-id', 'x-hl-lang', 'x-hl-text', 'data-inlay-id', 'data-inlay-type'],
-    }), styleScope)
+    cached = trimMarkdownUncached(data, styleScope)
     if (trimCache.size >= TRIM_CACHE_MAX) {
         // evict oldest entry
         const firstKey = trimCache.keys().next().value
@@ -997,6 +1139,54 @@ export function trimMarkdown(data:string, styleScope = '.chattext'){
     }
     trimCache.set(cacheKey, cached)
     return cached
+}
+
+function trimMarkdownUncached(data:string, styleScope = '.chattext'){
+    // Without a <risu-style> there is nothing to decode, so the plain string
+    // result is already final. Note the tag itself is not trusted input:
+    // risu-style is in ADD_TAGS, so cards, model output and user scripts can
+    // author one directly. Only its position in the parsed tree is relied on.
+    if(!data.includes('<risu-style')){
+        return DOMPurify.sanitize(data, trimPurifyConfig)
+    }
+
+    // Decoded CSS must never be handed back to the HTML sanitizer as <style>
+    // text: DOMPurify drops style nodes whose CSS contains '<' (SAFE_FOR_XML),
+    // which silently deletes svg data-uris and markup-like content strings.
+    // Take the DOM out of the sanitize we already run and swap the elements in
+    // place instead, so the CSS never re-enters the HTML parser at all.
+    // RETURN_DOM hands back the sanitized <body>, typed as Node. It is null only
+    // for empty input, which the guard above already excludes.
+    const root = DOMPurify.sanitize(data, {
+        ...trimPurifyConfig,
+        RETURN_DOM: true,
+    }) as HTMLElement | null
+    if(!root){
+        return ''
+    }
+
+    // Only real <risu-style> elements are decoded. A <risu-style> that survived
+    // inside an attribute value is not an element, so it is left as inert text
+    // and a <style> tag can never be restored into an attribute context.
+    for(const el of Array.from(root.querySelectorAll('risu-style'))){
+        const decoded = decodeStyleContent(el.textContent ?? '', styleScope)
+        if(decoded.css === undefined){
+            el.replaceWith(root.ownerDocument.createTextNode(decoded.fallback ?? ''))
+            continue
+        }
+        if(styleScope === '.risu-background-root'){
+            const compatibility = decodeStyleContent(el.textContent ?? '', '.chattext')
+            decoded.css += compatibility.css ?? ''
+        }
+        const style = root.ownerDocument.createElement('style')
+        // <style> is RAWTEXT, so '</style' is the only sequence that can end the
+        // block early and leak the rest of the CSS as markup once this string is
+        // parsed again ('\/' is still '/' inside CSS).
+        style.textContent = decoded.css.replaceAll(/<\/(?=style)/gi, '<\\/')
+        el.replaceWith(style)
+    }
+
+    return root.innerHTML
 }
 
 const metaCodes = [
@@ -1104,7 +1294,6 @@ function encodeStyle(txt:string){
         return "<risu-style>" + Buffer.from(c1).toString('hex') + "</risu-style>"
     })
 }
-const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms
 
 function scopeCssSelector(selector:string, styleScope:string){
     // The fixed background renderer represents the standalone page's body
@@ -1159,52 +1348,48 @@ function decodeStyleRule(rule:CssAtRuleAST, styleScope = '.chattext'){
     return rule
 }
 
-function decodeStyle(text:string, styleScope = '.chattext'){
-    return text.replaceAll(styleDecodeRegex, (full, txt:string) => {
-        const decodeOne = (scope:string) => {
-            let decoded = Buffer.from(txt, 'hex').toString('utf-8')
-            decoded = risuChatParser(decoded)
-            const ast = css.parse(decoded)
-            const rules = ast?.stylesheet?.rules
-            if(rules){
-                for(let i=0;i<rules.length;i++){
-                    rules[i] = decodeStyleRule(rules[i], scope)
-                }
-                ast.stylesheet.rules = rules
+/**
+ * Decodes one <risu-style> body into scoped CSS. Returns the CSS on its own so
+ * the caller can put it into a real <style> element instead of a markup string.
+ * On a CSS parse error the style is dropped and `fallback` holds the text that
+ * takes its place.
+ */
+function decodeStyleContent(hexText:string, styleScope = '.chattext'):{css?:string, fallback?:string}{
+    try {
+        let text = Buffer.from(hexText, 'hex').toString('utf-8')
+        text = risuChatParser(text)
+        const ast = css.parse(text)
+        const rules = ast?.stylesheet?.rules
+        if(rules){
+            for(let i=0;i<rules.length;i++){
+                rules[i] = decodeStyleRule(rules[i], styleScope)
             }
-            return css.stringify(ast, {
+            ast.stylesheet.rules = rules
+        }
+        return {
+            css: css.stringify(ast, {
                 indent: '',
                 compress: true,
             })
         }
-        try {
-            const primary = decodeOne(styleScope)
-            // Historically every background <style> also decorated the
-            // current chat's .chattext tree. Keep that compatibility copy
-            // while constraining the new background copy to its own root.
-            if(styleScope === '.risu-background-root'){
-                let chatStyle = ''
-                try {
-                    chatStyle = decodeOne('.chattext')
-                } catch {
-                    // A malformed compatibility copy must not remove the
-                    // otherwise valid isolated background style.
-                }
-                return `<style>${primary}${chatStyle}</style>`
-            }
-            return `<style>${primary}</style>`
-
-        } catch (error) {
-            if(DBState.db.returnCSSError){
-                return `CSS ERROR: ${error}`
-            }
-            return ""
+    } catch (error) {
+        if(DBState.db.returnCSSError){
+            return { fallback: `CSS ERROR: ${error}` }
         }
-    })
+        return { fallback: "" }
+    }
 }
 
 export async function hasher(data:Uint8Array){
-    return Buffer.from(await crypto.subtle.digest("SHA-256", data as any)).toString('hex');
+    // crypto.subtle exists only in a secure context. Over plain-HTTP remote
+    // access it is undefined, which broke every caller (plugin permission
+    // checks among them); the JS implementation gives the same digest.
+    if (globalThis.crypto?.subtle) {
+        return Buffer.from(await crypto.subtle.digest("SHA-256", data as any)).toString('hex');
+    }
+    const hash = new Sha256()
+    hash.update(data)
+    return Buffer.from(await hash.digest()).toString('hex');
 }
 
 export type CbsConditions = {

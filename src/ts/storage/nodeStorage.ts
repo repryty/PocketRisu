@@ -9,6 +9,35 @@ import { language } from "src/lang"
 import { alertInput, waitAlert, notifyError } from "../alert"
 import { decodeRisuSave, encodeRisuSaveLegacy } from "./risuSave"
 import { normalizeChat } from "./database.svelte"
+import type { PatchServerTimings } from "./saveMetrics"
+
+const AUTH_FETCH_TRANSIENT_MAX_RETRIES = 3
+const AUTH_FETCH_TRANSIENT_BASE_DELAY_MS = 500
+const AUTH_FETCH_TRANSIENT_JITTER_MIN = 0.5
+const AUTH_FETCH_TRANSIENT_JITTER_MAX = 1.5
+const AUTH_FETCH_TRANSIENT_STATUS = new Set([502, 503, 504])
+const FIRST_BYTE_TIMEOUT_MS = 30_000
+
+export type StorageFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+export interface AuthFetchRetryOptions {
+    maxRetries: number
+    baseDelayMs: number
+    jitterMin: number
+    jitterMax: number
+    random: () => number
+    delay: (ms: number) => Promise<void>
+}
+
+const defaultStorageFetch: StorageFetch = (input, init) => fetch(input, init)
+const defaultAuthFetchRetryOptions: AuthFetchRetryOptions = {
+    maxRetries: AUTH_FETCH_TRANSIENT_MAX_RETRIES,
+    baseDelayMs: AUTH_FETCH_TRANSIENT_BASE_DELAY_MS,
+    jitterMin: AUTH_FETCH_TRANSIENT_JITTER_MIN,
+    jitterMax: AUTH_FETCH_TRANSIENT_JITTER_MAX,
+    random: Math.random,
+    delay: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+}
 
 // ── User-gesture recency for the write lock ─────────────────────────────────
 // The server moves the single-writer lock only on writes that follow a real
@@ -30,10 +59,37 @@ function isUserActive(): boolean {
 // Custom error class for database conflict detection
 export class ConflictError extends Error {
     currentEtag: string
-    constructor(message: string, currentEtag: string) {
+    /** Server guard code (e.g. ARCHIVE_GUARD_REJECTED); undefined for a plain etag conflict. */
+    code?: string
+    constructor(message: string, currentEtag: string, code?: string) {
         super(message)
         this.name = 'ConflictError'
         this.currentEtag = currentEtag
+        this.code = code
+    }
+}
+
+export class StorageRequestError extends Error {
+    constructor(
+        message: string,
+        public readonly op: string,
+        public readonly status?: number,
+        public readonly serverMessage?: string
+    ) {
+        super(message)
+        this.name = 'StorageRequestError'
+        Object.setPrototypeOf(this, StorageRequestError.prototype)
+    }
+}
+
+// Thrown by importBackup when the server rejects a backup. `code` is the
+// server's machine-readable reason (e.g. BACKUP_ENCRYPTED) so the UI can show
+// a localized explanation instead of the raw message.
+export class BackupImportError extends Error {
+    constructor(message: string, public readonly code: string | null = null) {
+        super(message)
+        this.name = 'BackupImportError'
+        Object.setPrototypeOf(this, BackupImportError.prototype)
     }
 }
 
@@ -52,6 +108,35 @@ export interface PatchItemResult {
     persistWarning?: PersistWarning
     /** Set when the server's chat-internal-field guard rejected the patch. */
     chatGuardRejected?: boolean
+    /** Server-side per-key hashes sent with a hash-mismatch 409. */
+    hashDiagnostics?: PatchHashDiagnostics
+    /** `code` / `error` of a 409 body, for logging which guard rejected the patch. */
+    conflictCode?: string
+    conflictError?: string
+    /** Server stage timings on success (older servers omit them). */
+    serverTimings?: PatchServerTimings
+}
+
+/** Hash fields a 409 or a full-write response may carry; null when absent. */
+export function parseHashDiagnostics(data: any): PatchHashDiagnostics | null {
+    if (!data || typeof data !== 'object') return null
+    if (!(data.keyHashes || data.characterHashes || typeof data.serverHash === 'string')) return null
+    return {
+        serverHash: typeof data.serverHash === 'string' ? data.serverHash : undefined,
+        keyHashes: data.keyHashes && typeof data.keyHashes === 'object' ? data.keyHashes : undefined,
+        characterHashes: data.characterHashes && typeof data.characterHashes === 'object' ? data.characterHashes : undefined,
+        duplicateCharIds: Array.isArray(data.duplicateCharIds) ? data.duplicateCharIds.filter((id: unknown) => typeof id === 'string') : undefined,
+    }
+}
+
+export interface PatchHashDiagnostics {
+    serverHash?: string
+    /** Root key → hex hash of the server's current value. */
+    keyHashes?: Record<string, string>
+    /** chaId (or `#index` when missing) → hex hash of the server's stubbed character (first occurrence). */
+    characterHashes?: Record<string, string>
+    /** chaIds that repeat in the server's characters array. */
+    duplicateCharIds?: string[]
 }
 
 export interface ExportBackupOptions {
@@ -68,11 +153,43 @@ export interface ExportBackupOptions {
 }
 
 /** Size breakdown backing the settings-only confirm dialog. */
+export interface PluginStorageIndex {
+    entries: { key: string, size: number }[]
+    migrated: boolean
+}
+
 export interface SettingsBackupEstimate {
     dbBytes: number
     baseAssets: { count: number, bytes: number }
     moduleAssets: { count: number, bytes: number, moduleCount: number }
 }
+
+export type AssetManifestTuple = [string, string] | [string, string, string]
+
+export type AssetNameResolution = { resolved: Record<string, string>; fuzzy: string[] }
+
+export interface AssetManifestDescriptor {
+    id: string
+    version: number
+    count: number
+    sha256: string
+    ownerKind?: 'module' | 'character' | 'persona-module'
+    ownerId?: string
+}
+
+export interface AssetManifestPage {
+    total: number
+    offset: number
+    limit: number
+    items: AssetManifestTuple[]
+}
+
+export type AssetManifestOperation =
+    | { type: 'append'; item: AssetManifestTuple }
+    | { type: 'insert'; index: number; item: AssetManifestTuple }
+    | { type: 'remove'; index: number }
+    | { type: 'rename'; index: number; name: string }
+    | { type: 'replace'; index: number; item: AssetManifestTuple }
 
 export class NodeStorage{
     private static readonly BULK_WRITE_CLIENT_BATCH = 20
@@ -95,11 +212,18 @@ export class NodeStorage{
     })()
 
     _lastDbEtag: string | null = null
+
+    private _lastDbWriteDiagnostics: PatchHashDiagnostics | null = null
     authChecked = false
     private cachedJwt: { token: string; expiresAt: number } | null = null
     private static sessionInitialized = false
     private static sessionPending: Promise<void> | null = null
     private refreshPending: Promise<string> | null = null
+
+    constructor(
+        private readonly fetchFn: StorageFetch = defaultStorageFetch,
+        private readonly retryOptions: Partial<AuthFetchRetryOptions> = {}
+    ) {}
 
     async createAuth(){
         const now = Date.now()
@@ -108,6 +232,10 @@ export class NodeStorage{
         }
         const token = await this._refreshToken()
         return token
+    }
+
+    getSessionId(): string {
+        return NodeStorage.sessionId
     }
 
     // Called once after JWT auth is confirmed. Issues a session cookie so that
@@ -209,14 +337,118 @@ export class NodeStorage{
         }
     }
 
+    private getAuthFetchRetryOptions(): AuthFetchRetryOptions {
+        return {
+            ...defaultAuthFetchRetryOptions,
+            ...this.retryOptions,
+        }
+    }
+
+    private getTransientRetryDelay(attempt: number, options: AuthFetchRetryOptions): number {
+        if (options.baseDelayMs <= 0) return 0
+        const jitterRange = options.jitterMax - options.jitterMin
+        const jitter = options.jitterMin + (options.random() * jitterRange)
+        return options.baseDelayMs * (2 ** attempt) * jitter
+    }
+
+    private isAbortError(error: unknown): boolean {
+        return error instanceof DOMException && error.name === 'AbortError'
+            || error instanceof Error && error.name === 'AbortError'
+    }
+
+    private isTransientStatus(status: number): boolean {
+        return AUTH_FETCH_TRANSIENT_STATUS.has(status)
+    }
+
+    private abortReason(signal: AbortSignal): unknown {
+        return (signal as AbortSignal & { reason?: unknown }).reason
+            ?? new DOMException('The operation was aborted.', 'AbortError')
+    }
+
     private async authFetch(input: RequestInfo | URL, init: RequestInit = {}, retry = true) {
+        const retryOptions = this.getAuthFetchRetryOptions()
+        let transientRetries = 0
+
+        while (true) {
+            if (init.signal?.aborted) {
+                throw this.abortReason(init.signal)
+            }
+
+            try {
+                const response = await this.authFetchOnce(input, init, retry)
+                if (!this.isTransientStatus(response.status) || transientRetries >= retryOptions.maxRetries) {
+                    return response
+                }
+
+                const delayMs = this.getTransientRetryDelay(transientRetries, retryOptions)
+                transientRetries += 1
+                await retryOptions.delay(delayMs)
+            } catch (error) {
+                if (init.signal?.aborted || this.isAbortError(error)) {
+                    throw error
+                }
+                // Only genuine network failures retry — fetch rejects those as
+                // TypeError. Auth/login errors and bugs must surface at once.
+                if (!(error instanceof TypeError)) {
+                    throw error
+                }
+                if (transientRetries >= retryOptions.maxRetries) {
+                    throw error
+                }
+
+                const delayMs = this.getTransientRetryDelay(transientRetries, retryOptions)
+                transientRetries += 1
+                await retryOptions.delay(delayMs)
+            }
+        }
+    }
+
+    // A half-open remote link (a phone on Tailscale that silently dropped)
+    // leaves a fetch hanging forever. For the idempotent GETs on the chat
+    // entry path, give the server this long to send response headers, then
+    // abort and try once more. The body is deliberately not limited: once
+    // headers arrive the link is alive, and a large chat may take a while.
+    private async authFetchGetWithFirstByteTimeout(
+        input: RequestInfo | URL,
+        init: RequestInit = {},
+        timeoutMs = FIRST_BYTE_TIMEOUT_MS,
+    ): Promise<Response> {
+        // A caller-supplied signal keeps full control; nothing is layered on top.
+        if (init.signal) return this.authFetch(input, init)
+        for (let attempt = 0; ; attempt++) {
+            const controller = new AbortController()
+            let timedOut = false
+            let cancelTimer: () => void = () => {}
+            // Raced rather than relying on the signal alone: the auth and
+            // session pre-flight inside authFetch use their own fetches that
+            // do not carry this signal, and a hang there must still time out.
+            const timeout = new Promise<never>((_resolve, reject) => {
+                const timer = setTimeout(() => {
+                    timedOut = true
+                    controller.abort()
+                    reject(new DOMException(`No response headers within ${timeoutMs}ms`, 'AbortError'))
+                }, timeoutMs)
+                cancelTimer = () => clearTimeout(timer)
+            })
+            try {
+                return await Promise.race([this.authFetch(input, { ...init, signal: controller.signal }), timeout])
+            } catch (error) {
+                if (!timedOut || attempt >= 1) throw error
+                console.warn(`[Storage] No response headers within ${timeoutMs}ms, retrying once: ${String(input)}`)
+            } finally {
+                cancelTimer()
+            }
+        }
+    }
+
+    private async authFetchOnce(input: RequestInfo | URL, init: RequestInit = {}, retry = true) {
         await this.checkAuth()
         const headers = new Headers(init.headers)
         headers.set('risu-auth', await this.createAuth())
         headers.set('x-session-id', NodeStorage.sessionId)
         if (isUserActive()) headers.set('x-user-active', '1')
 
-        const response = await fetch(input, {
+        const response = await this.fetchFn(input, {
             ...init,
             headers
         })
@@ -229,10 +461,39 @@ export class NodeStorage{
             this.authChecked = false
             this.cachedJwt = null
             await this.checkAuth()
-            return this.authFetch(input, init, false)
+            return this.authFetchOnce(input, init, false)
         }
 
         return response
+    }
+
+    private async readStorageServerMessage(response: Response): Promise<string | undefined> {
+        try {
+            const data = await response.clone().json()
+            return typeof data?.error === 'string' ? data.error : undefined
+        } catch {
+            return undefined
+        }
+    }
+
+    private buildStorageRequestMessage(op: string, status?: number, serverMessage?: string): string {
+        let message = status === 413 && (op === 'setItem' || op === 'setItems')
+            ? language.errors.storageRequestTooLarge
+            : `${op} failed${status ? ` with HTTP ${status}` : ''}`
+        if (serverMessage) {
+            message += `: ${serverMessage}`
+        }
+        return message
+    }
+
+    private async storageRequestError(op: string, response: Response): Promise<StorageRequestError> {
+        const serverMessage = await this.readStorageServerMessage(response)
+        return new StorageRequestError(
+            this.buildStorageRequestMessage(op, response.status, serverMessage),
+            op,
+            response.status,
+            serverMessage
+        )
     }
 
     async setItem(key:string, value:Uint8Array, etag?:string) {
@@ -250,25 +511,10 @@ export class NodeStorage{
         })
         if(da.status === 409){
             const data = await da.json()
-            throw new ConflictError(data.error, data.currentEtag)
+            throw new ConflictError(data.error, data.currentEtag, typeof data.code === 'string' ? data.code : undefined)
         }
         if(da.status < 200 || da.status >= 300){
-            // Keep the status and server response attached to the error. The
-            // CharX importer can then distinguish transient 5xx/network
-            // failures from a 423 session hand-off, instead of collapsing all
-            // failed asset writes into an opaque "setItem Error".
-            const bodyText = await da.text().catch(() => '')
-            let bodyMessage = ''
-            try {
-                const body = JSON.parse(bodyText)
-                if (typeof body?.error === 'string') bodyMessage = body.error
-            } catch {
-                // Some proxies return plain text for an error response.
-            }
-            const detail = bodyMessage || bodyText.trim() || da.statusText || 'request failed'
-            const error = new Error(`setItem failed (${da.status}): ${detail}`)
-            ;(error as Error & { status?: number }).status = da.status
-            throw error
+            throw await this.storageRequestError('setItem', da)
         }
         const data = await da.json()
         if(data.error){
@@ -280,6 +526,16 @@ export class NodeStorage{
         if (key === 'database/database.bin' && nextEtag) {
             this._lastDbEtag = nextEtag
         }
+        if (key === 'database/database.bin') {
+            this._lastDbWriteDiagnostics = parseHashDiagnostics(data)
+        }
+    }
+
+    /** Hashes of the view the last database.bin full write persisted; consumed once. */
+    takeDbWriteDiagnostics(): PatchHashDiagnostics | null {
+        const diagnostics = this._lastDbWriteDiagnostics
+        this._lastDbWriteDiagnostics = null
+        return diagnostics
     }
     async getItem(key:string):Promise<Buffer> {
         const headers: Record<string, string> = {
@@ -288,7 +544,7 @@ export class NodeStorage{
 
         const da = await this.authFetch('/api/read', { method: "GET", headers })
         if(da.status < 200 || da.status >= 300){
-            throw "getItem Error"
+            throw await this.storageRequestError('getItem', da)
         }
 
         // Capture ETag for database.bin
@@ -315,7 +571,7 @@ export class NodeStorage{
             headers
         })
         if(da.status < 200 || da.status >= 300){
-            throw "listItem Error"
+            throw await this.storageRequestError('listItem', da)
         }
         const data = await da.json()
         if(data.error){
@@ -331,7 +587,7 @@ export class NodeStorage{
             }
         })
         if(da.status < 200 || da.status >= 300){
-            throw "removeItem Error"
+            throw await this.storageRequestError('removeItem', da)
         }
         const data = await da.json()
         if(data.error){
@@ -339,7 +595,23 @@ export class NodeStorage{
         }
     }
 
+    // Boot fires several storage calls at once. Without sharing one check,
+    // each sent its own test_auth and, on an unset or wrong password, each
+    // opened its own password prompt.
+    private authPending: Promise<void> | null = null
+
     private async checkAuth(){
+        if(!this.authChecked){
+            this.authPending ??= this.runAuthCheck().finally(() => {
+                this.authPending = null
+            })
+            await this.authPending
+            return
+        }
+        await this.initSession()
+    }
+
+    private async runAuthCheck(){
 
         if(!this.authChecked){
             const data = await (await fetch('/api/test_auth',{
@@ -417,17 +689,25 @@ export class NodeStorage{
 
         if (da.status === 409) {
             const data = await da.json()
+            // The server's etag is returned for the caller to compare, not
+            // adopted: if it differs from the one this client last synced
+            // against, someone else wrote in between, and adopting it would
+            // let the full-write fallback pass x-if-match and overwrite them.
             const currentEtag = data.currentEtag as string | undefined
-            if (key === 'database/database.bin' && currentEtag) {
-                this._lastDbEtag = currentEtag
-            }
             // Server signals chat-guard rejection via explicit fields. The
             // error string fallback is kept for forward-compat with deployed
             // servers that haven't shipped the explicit fields yet.
             const rejectedByChatGuard = data.chatGuardRejected === true
                 || data.code === 'CHAT_GUARD_REJECTED'
                 || (typeof data.error === 'string' && data.error.includes('chat-internal field ops'))
-            return { success: false, etag: currentEtag, chatGuardRejected: rejectedByChatGuard }
+            return {
+                success: false,
+                etag: currentEtag,
+                chatGuardRejected: rejectedByChatGuard,
+                hashDiagnostics: parseHashDiagnostics(data) ?? undefined,
+                conflictCode: typeof data.code === 'string' ? data.code : undefined,
+                conflictError: typeof data.error === 'string' ? data.error : undefined,
+            }
         }
         if (da.status < 200 || da.status >= 300) {
             // Surface the server's error detail — without this the browser
@@ -446,7 +726,10 @@ export class NodeStorage{
             this._lastDbEtag = nextEtag
         }
         const persistWarning = data.persistWarning as PersistWarning | undefined
-        return { success: true, etag: nextEtag, persistWarning }
+        const serverTimings = data.timings && typeof data.timings === 'object'
+            ? data.timings as PatchServerTimings
+            : undefined
+        return { success: true, etag: nextEtag, persistWarning, serverTimings }
     }
 
     // ── Bulk asset operations (3-2-B) ──────────────────────────────────────────
@@ -497,20 +780,185 @@ export class NodeStorage{
                     'content-type': 'application/json'
                 }
             })
-            if (da.status < 200 || da.status >= 300) throw 'setItems Error'
+            if (da.status < 200 || da.status >= 300) throw await this.storageRequestError('setItems', da)
         }
     }
 
-    async exportBackup(opts?: ExportBackupOptions): Promise<Response> {
+    // ── Lazy asset-reference manifests ────────────────────────────────────────
+    async getAssetManifestPage(
+        manifest: string | AssetManifestDescriptor,
+        options: { offset?: number; limit?: number; search?: string } = {},
+    ): Promise<AssetManifestPage> {
+        const descriptor = typeof manifest === 'string' ? null : manifest
+        let manifestId = typeof manifest === 'string' ? manifest : manifest.id
+        const params = new URLSearchParams()
+        if (options.offset != null) params.set('offset', String(options.offset))
+        if (options.limit != null) params.set('limit', String(options.limit))
+        if (options.search) params.set('search', options.search)
+        // The server caches pages as immutable (content-addressed ids); the
+        // format version in the URL keeps a newer client from reading a page
+        // shape cached by an older one.
+        if (descriptor?.version != null) params.set('v', String(descriptor.version))
+        const query = params.toString()
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const da = await this.authFetchGetWithFirstByteTimeout(`/api/asset-manifests/${encodeURIComponent(manifestId)}${query ? `?${query}` : ''}`)
+            if (da.ok) return await da.json()
+            if (da.status !== 404 || !descriptor?.ownerKind || !descriptor.ownerId || attempt > 0) {
+                throw new Error(`asset manifest read error: ${da.status}`)
+            }
+
+            // Superseded manifest rows are pruned on activation. A 404 for a
+            // descriptor that carries owner information means the client must
+            // refresh the owner's live descriptor and retry once.
+            const live = await this.getAssetManifestOwner(descriptor.ownerKind, descriptor.ownerId)
+            if (!live) throw new Error('asset manifest owner is no longer live')
+            Object.assign(descriptor, live)
+            manifestId = live.id
+        }
+        throw new Error('asset manifest read retry exhausted')
+    }
+
+    async getAssetManifestOwner(ownerKind: string, ownerId: string): Promise<AssetManifestDescriptor | null> {
+        const da = await this.authFetch(
+            `/api/asset-manifests/owner/${encodeURIComponent(ownerKind)}/${encodeURIComponent(ownerId)}`,
+        )
+        if (da.status === 404) return null
+        if (!da.ok) throw new Error(`asset manifest owner read error: ${da.status}`)
+        return await da.json()
+    }
+
+    async getAllAssetManifestItems(manifest: AssetManifestDescriptor): Promise<AssetManifestTuple[]> {
+        const pageSize = 500
+        // Pages are fetched in parallel: sequential paging cost one RTT per
+        // 500 assets (a 5,000-asset manifest = ~10 round trips), which is
+        // what made warming the manifest cache slow over remote links.
+        // getAssetManifestPage may refresh the descriptor in place when the
+        // revision was superseded mid-flight; tuples from two revisions must
+        // never mix, so any id change discards everything and restarts
+        // against the fresh descriptor.
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const requestedManifestId = manifest.id
+            const count = manifest.count
+            if (count <= 0) return []
+            const pageCount = Math.ceil(count / pageSize)
+            const pages = await Promise.all(Array.from({ length: pageCount }, (_, i) =>
+                this.getAssetManifestPage(manifest, { offset: i * pageSize, limit: pageSize }),
+            ))
+            if (manifest.id !== requestedManifestId) continue
+            const items = pages.flatMap((page) => page.items)
+            if (items.length !== count) {
+                throw new Error(`asset manifest count mismatch: expected ${count}, got ${items.length}`)
+            }
+            return items
+        }
+        throw new Error('asset manifest kept changing while loading; retry exhausted')
+    }
+
+    async resolveAssetManifestNames(
+        owners: Array<{ kind?: string; ownerId?: string; manifestId?: string; fuzzy?: boolean }>,
+        names: string[],
+        maxDistance: number,
+    ): Promise<AssetNameResolution> {
+        const da = await this.authFetch('/api/asset-manifests/resolve', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ owners, names, maxDistance }),
+        })
+        if (!da.ok) throw new Error(`asset manifest resolve error: ${da.status}`)
+        const body = await da.json()
+        // `fuzzy` lists the names only the fuzzy fallback matched (older
+        // servers omit it: treat everything as exact, as before).
+        return { resolved: body.resolved ?? {}, fuzzy: Array.isArray(body.fuzzy) ? body.fuzzy : [] }
+    }
+
+    async editAssetManifest(
+        ownerKind: string,
+        ownerId: string,
+        expectedManifestId: string,
+        operations: AssetManifestOperation[],
+    ): Promise<AssetManifestDescriptor> {
+        const da = await this.authFetch(
+            `/api/asset-manifests/owner/${encodeURIComponent(ownerKind)}/${encodeURIComponent(ownerId)}`,
+            {
+                method: 'PATCH',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ expectedManifestId, operations }),
+            },
+        )
+        if (da.status === 409) {
+            const body = await da.json().catch(() => ({}))
+            const error = new ConflictError('Asset manifest revision conflict', '') as ConflictError & {
+                current?: AssetManifestDescriptor
+            }
+            error.current = body?.current
+            throw error
+        }
+        if (!da.ok) throw new Error(`asset manifest edit error: ${da.status}`)
+        return await da.json()
+    }
+
+    /** Hands the backup export to the browser's own download manager. */
+    async downloadBackupExport(opts?: ExportBackupOptions): Promise<void> {
         const params = new URLSearchParams()
         if (opts?.target === 'upstream') params.set('target', 'upstream')
         if (opts?.mode === 'settings') params.set('mode', 'settings')
         if (opts?.moduleAssets === false) params.set('moduleAssets', '0')
         const query = params.toString()
-        const url = query ? `/api/backup/export?${query}` : '/api/backup/export'
-        const da = await this.authFetch(url)
-        if (da.status < 200 || da.status >= 300) throw `backup export error: ${da.status}`
-        return da
+        await this.startCookieDownload(query ? `/api/backup/export?${query}` : '/api/backup/export')
+    }
+
+    // A backup is streamed by the browser's download manager straight to disk
+    // instead of relayed through this tab (whose memory Safari fills with the
+    // whole file, and which non-secure origins route through a third-party
+    // page). The GET authenticates with the session cookie, so refresh it
+    // first. No x-session-id: registering a boot here would disturb the
+    // writer lock.
+    private async startCookieDownload(url: string): Promise<void> {
+        const res = await fetch('/api/session', {
+            method: 'POST',
+            headers: { 'risu-auth': await this.createAuth() },
+        })
+        if (!res.ok) throw new Error(`session refresh failed: ${res.status}`)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = ''
+        anchor.style.display = 'none'
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+    }
+
+    // Key names + sizes only; values stay on the server until read per key.
+    async getPluginStorageIndex(): Promise<PluginStorageIndex> {
+        const da = await this.authFetch('/api/plugin-storage/index', { method: 'GET' })
+        if (da.status < 200 || da.status >= 300) throw await this.storageRequestError('pluginStorageIndex', da)
+        return await da.json()
+    }
+
+    // Streams every plugin-storage value (NDJSON `[key, json]` per line).
+    async getPluginStorageAll(onEntry: (key: string, text: string) => void): Promise<void> {
+        const da = await this.authFetch('/api/plugin-storage/all', { method: 'GET' })
+        if (da.status < 200 || da.status >= 300) throw await this.storageRequestError('pluginStorageAll', da)
+        const reader = da.body!.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split('\n')
+            buffer = lines.pop()!
+            for (const line of lines) {
+                if (!line) continue
+                const [key, text] = JSON.parse(line)
+                onEntry(key, text)
+            }
+        }
+        buffer += decoder.decode()
+        if (buffer.trim()) {
+            const [key, text] = JSON.parse(buffer)
+            onEntry(key, text)
+        }
     }
 
     async settingsBackupEstimate(): Promise<SettingsBackupEstimate> {
@@ -565,6 +1013,7 @@ export class NodeStorage{
             let leftover = ''
             let result: {ok: boolean, assetsRestored: number, coldStorageFailed?: number} | null = null
             let serverErrorMsg: string | null = null
+            let serverErrorCode: string | null = null
 
             const drainNdjson = () => {
                 const text = xhr.responseText
@@ -585,6 +1034,7 @@ export class NodeStorage{
                         result = msg
                     } else if (msg.type === 'error') {
                         serverErrorMsg = typeof msg.message === 'string' ? msg.message : 'backup import failed'
+                        serverErrorCode = typeof msg.code === 'string' ? msg.code : null
                     }
                     // Ignore 'heartbeat' and unknown event types.
                 }
@@ -603,7 +1053,7 @@ export class NodeStorage{
                     return
                 }
                 drainNdjson()
-                if (serverErrorMsg) reject(new Error(serverErrorMsg))
+                if (serverErrorMsg) reject(new BackupImportError(serverErrorMsg, serverErrorCode))
                 else if (result) resolve(result)
                 else reject(new Error('backup import: no result received'))
             }
@@ -616,7 +1066,7 @@ export class NodeStorage{
 
     async saveServerBackup(
         onProgress?: (current: number, total: number, bytes: number, totalBytes: number) => void
-    ): Promise<{ok: boolean, filename: string, size: number}> {
+    ): Promise<{ok: boolean, filename: string, size: number, dir?: string}> {
         const da = await this.authFetch('/api/backup/server/save', {
             method: 'POST',
             headers: {
@@ -632,7 +1082,7 @@ export class NodeStorage{
         const reader = da.body!.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
-        let result: {ok: boolean, filename: string, size: number} | null = null
+        let result: {ok: boolean, filename: string, size: number, dir?: string} | null = null
 
         while (true) {
             const { done, value } = await reader.read()
@@ -716,23 +1166,71 @@ export class NodeStorage{
         if (da.status < 200 || da.status >= 300) throw new Error(`server backup delete error: ${da.status}`)
     }
 
-    async downloadServerBackup(filename: string): Promise<Response> {
-        const da = await this.authFetch(`/api/backup/server/download/${encodeURIComponent(filename)}`)
-        if (da.status === 404) throw new Error('Backup file not found')
-        if (da.status < 200 || da.status >= 300) throw new Error(`server backup download error: ${da.status}`)
-        return da
+    async downloadServerBackup(filename: string): Promise<void> {
+        await this.startCookieDownload(`/api/backup/server/download/${encodeURIComponent(filename)}`)
     }
 
     // ── Chat content (runtime lazy load) ────────────────────────────────────
 
     async fetchChatContent(chaId: string, chatIndex: number, chatId: string): Promise<any | null> {
-        const da = await this.authFetch(`/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}`, {
+        const da = await this.authFetchGetWithFirstByteTimeout(`/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}`, {
             headers: { 'x-chat-id': chatId },
         })
         if (da.status === 404) return null
         if (da.status < 200 || da.status >= 300) throw new Error(`fetchChatContent error: ${da.status}`)
         const buffer = new Uint8Array(await da.arrayBuffer())
         return normalizeChat(await decodeRisuSave(buffer))
+    }
+
+    /**
+     * Chat delta sync (see server `sendChatContent`): with a base, the server
+     * answers with only the messages after it when the prefix verifies —
+     * `deltaBase` is then set and `chat.message` holds just the rest.
+     */
+    async fetchChatContentDelta(chaId: string, chatIndex: number, chatId: string, base: { count: number, fp: string } | null): Promise<{ chat: any, deltaBase: number | null } | null> {
+        const headers: Record<string, string> = { 'x-chat-id': chatId }
+        if (base) {
+            headers['x-chat-base-count'] = String(base.count)
+            headers['x-chat-base-fp'] = base.fp
+        }
+        const da = await this.authFetchGetWithFirstByteTimeout(`/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}`, { headers })
+        if (da.status === 404) return null
+        if (da.status < 200 || da.status >= 300) throw new Error(`fetchChatContent error: ${da.status}`)
+        const deltaHeader = da.headers.get('x-chat-delta-base')
+        const deltaBase = deltaHeader !== null && base && Number(deltaHeader) === base.count ? base.count : null
+        const buffer = new Uint8Array(await da.arrayBuffer())
+        return { chat: normalizeChat(await decodeRisuSave(buffer)), deltaBase }
+    }
+
+    /**
+     * Save a chat, optionally as a delta: `base` names the prefix the server
+     * already holds and `chat.message` carries only the messages after it.
+     * The body is gzipped when the browser can. Returns 'base-mismatch' when
+     * the server could not verify the prefix (the caller then saves in full).
+     */
+    async saveChatContentDelta(chaId: string, chatIndex: number, chatId: string, chat: any, base: { count: number, fp: string } | null): Promise<'ok' | 'base-mismatch'> {
+        const encoded = encodeRisuSaveLegacy(chat)
+        const headers: Record<string, string> = {
+            'content-type': 'application/octet-stream',
+            'x-chat-id': chatId,
+        }
+        if (base) {
+            headers['x-chat-base-count'] = String(base.count)
+            headers['x-chat-base-fp'] = base.fp
+        }
+        const gzipped = await gzipForUpload(encoded)
+        if (gzipped) headers['content-encoding'] = 'gzip'
+        const da = await this.authFetch(`/api/chat-content/${encodeURIComponent(chaId)}/${chatIndex}`, {
+            method: 'POST',
+            headers,
+            body: (gzipped ?? encoded) as BodyInit,
+        })
+        if (base && da.status === 409) {
+            const body = await da.json().catch(() => ({})) as { code?: string }
+            if (body?.code === 'CHAT_DELTA_BASE_MISMATCH') return 'base-mismatch'
+        }
+        if (da.status < 200 || da.status >= 300) throw new Error(`saveChatContent error: ${da.status}`)
+        return 'ok'
     }
 
     async saveChatContent(chaId: string, chatIndex: number, chatId: string, chat: any): Promise<void> {
@@ -746,6 +1244,83 @@ export class NodeStorage{
             body: encoded,
         })
         if (da.status < 200 || da.status >= 300) throw new Error(`saveChatContent error: ${da.status}`)
+    }
+
+    // ── Character archive (deactivate / activate) — see src/ts/characterArchive.ts ──
+
+    /** Server writes + verifies the payload; returns the stub to keep in the database. */
+    async archiveCharacter(chaId: string, arg: { acceptLostChats?: boolean } = {}): Promise<any> {
+        const da = await this.authFetch(`/api/characters/${encodeURIComponent(chaId)}/archive`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ acceptLostChats: arg.acceptLostChats === true }),
+        })
+        const body = await da.json().catch(() => ({})) as { ok?: boolean; stub?: any; error?: string; code?: string; chats?: string[] }
+        if (da.status < 200 || da.status >= 300 || !body?.stub) {
+            throw new CharacterArchiveError(body?.code ?? `HTTP_${da.status}`, body?.error ?? `archive error: ${da.status}`, body?.chats)
+        }
+        return body.stub
+    }
+
+    /**
+     * Archive rows for many characters in one request. Throws only when the
+     * request as a whole fails; each character's outcome is in its result.
+     */
+    async archiveCharacters(chaIds: string[], arg: { acceptLostChats?: boolean } = {}): Promise<ArchiveBatchResult[]> {
+        const da = await this.authFetch('/api/characters/archive-batch', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ chaIds, acceptLostChats: arg.acceptLostChats === true }),
+        })
+        const body = await da.json().catch(() => ({})) as { ok?: boolean; results?: ArchiveBatchResult[]; error?: string; code?: string }
+        if (da.status < 200 || da.status >= 300 || !Array.isArray(body?.results)) {
+            throw new CharacterArchiveError(body?.code ?? `HTTP_${da.status}`, body?.error ?? `archive error: ${da.status}`)
+        }
+        return body.results
+    }
+
+    /** Server registers the chats and returns the client-view character (stub chats, manifest descriptor). */
+    async activateCharacter(chaId: string, archivedAt?: number): Promise<any> {
+        const da = await this.authFetch(`/api/characters/${encodeURIComponent(chaId)}/activate`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ archivedAt }),
+        })
+        const body = await da.json().catch(() => ({})) as { ok?: boolean; character?: any; error?: string; code?: string }
+        if (da.status < 200 || da.status >= 300 || !body?.character) {
+            throw new CharacterArchiveError(body?.code ?? `HTTP_${da.status}`, body?.error ?? `activate error: ${da.status}`)
+        }
+        return body.character
+    }
+
+    /** Permanently delete every archive row of a deactivated character (the caller drops the stub). */
+    async deleteArchivedCharacter(chaId: string): Promise<void> {
+        const da = await this.authFetch(`/api/characters/${encodeURIComponent(chaId)}/archive`, { method: 'DELETE' })
+        if (da.status < 200 || da.status >= 300) {
+            const body = await da.json().catch(() => ({})) as { error?: string; code?: string }
+            throw new CharacterArchiveError(body?.code ?? `HTTP_${da.status}`, body?.error ?? `archive delete error: ${da.status}`)
+        }
+    }
+
+    /** Server-side inlay reference scan over every chat body (lazy-loaded and deactivated ones included). */
+    async fetchInlayReferences(): Promise<{ scannedAt: number; totalMessages: number; refCounts: Record<string, number> }> {
+        const da = await this.authFetch('/api/inlays/references')
+        if (da.status < 200 || da.status >= 300) {
+            const body = await da.json().catch(() => ({})) as { error?: string }
+            throw new Error(body?.error ?? `inlay reference scan error: ${da.status}`)
+        }
+        return await da.json()
+    }
+
+    /** Every deactivated character as a full legacy record (partial backup). */
+    async fetchArchivedCharactersInline(): Promise<any[]> {
+        const da = await this.authFetch('/api/characters/archived/inline')
+        if (da.status < 200 || da.status >= 300) {
+            const body = await da.json().catch(() => ({})) as { error?: string; code?: string }
+            throw new CharacterArchiveError(body?.code ?? `HTTP_${da.status}`, body?.error ?? `archived inline error: ${da.status}`)
+        }
+        const decoded = await decodeRisuSave(new Uint8Array(await da.arrayBuffer())) as { characters?: any[] }
+        return Array.isArray(decoded?.characters) ? decoded.characters : []
     }
 
     // ── Save-folder migration ─────────────────────────────────────────────────
@@ -854,4 +1429,38 @@ async function digestPassword(message:string) {
         throw new Error(`Password hashing failed (${res.status})`)
     }
     return await res.text()
+}
+
+/** Failure reported by the character archive endpoints; `code` is the server's error code. */
+/** One character's outcome in /api/characters/archive-batch. */
+export type ArchiveBatchResult =
+    | { chaId: string; ok: true; stub: any }
+    | { chaId: string; ok: false; code: string; error: string; chats?: string[] }
+
+export class CharacterArchiveError extends Error {
+    code: string
+    /** Names of the chats the failure is about (ARCHIVE_CHATS_UNAVAILABLE). */
+    chats: string[]
+    constructor(code: string, message: string, chats: string[] = []) {
+        super(message)
+        this.name = 'CharacterArchiveError'
+        this.code = code
+        this.chats = Array.isArray(chats) ? chats : []
+    }
+}
+
+// Chat bodies are text-heavy (Korean prose is ~3 bytes a character), so the
+// upload shrinks several-fold; small bodies are not worth the round trip
+// through the stream. The server's express.raw() inflates Content-Encoding
+// gzip transparently, and old servers never see this header from old code.
+const GZIP_MIN_BYTES = 8 * 1024
+
+async function gzipForUpload(bytes: Uint8Array): Promise<Uint8Array | null> {
+    if (bytes.byteLength < GZIP_MIN_BYTES || typeof CompressionStream === 'undefined') return null
+    try {
+        const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
+        return new Uint8Array(await new Response(stream).arrayBuffer())
+    } catch {
+        return null
+    }
 }

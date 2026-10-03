@@ -15,6 +15,7 @@ vi.doMock('../storage/database.svelte', () => ({
 
 vi.doMock('../stores.svelte', () => ({
     DBState,
+    selIdState: { selId: undefined },
     selectedCharID,
     hotReloading,
     pluginAlertModalStore,
@@ -31,6 +32,14 @@ vi.mock('../util', () => ({
     sleep: async () => {},
 }))
 vi.mock('../globalApi.svelte', () => ({
+    forageStorage: {
+        Init: async () => {},
+        getPluginStorageIndex: async () => ({ entries: [] }),
+        getPluginStorageAll: async (onItem: (key: string, text: string) => void) => {
+            onItem('target', JSON.stringify({ nested: { value: 1 } }));
+            onItem('empty', JSON.stringify(''));
+        },
+    },
     fetchNative: () => {},
     globalFetch: () => {},
     readImage: () => {},
@@ -49,9 +58,13 @@ vi.mock('./apiV3/transpiler', () => ({ pluginCodeTranspiler: (code: string) => c
 
 const { getV2PluginAPIs } = await import('./plugins.svelte')
 
+const pluginStorageStore = await import('./pluginStorageStore')
+
 let unrelatedReads = 0
 
-beforeEach(() => {
+beforeEach(async () => {
+    pluginStorageStore._resetForTests()
+    await pluginStorageStore.preloadAll()
     unrelatedReads = 0
 
     const unrelated = {}
@@ -80,10 +93,10 @@ describe('pluginStorage.getItem', () => {
 
         expect(value).toEqual({ nested: { value: 1 } })
         expect(unrelatedReads).toBe(0)
-        expect(value).not.toBe(DBState.db.pluginCustomStorage.target)
+        expect(value).not.toBe(pluginStorageStore.getItemSync('target'))
 
         value.nested.value = 2
-        expect(DBState.db.pluginCustomStorage.target.nested.value).toBe(1)
+        expect(pluginStorageStore.getItemSync('target').nested.value).toBe(1)
     })
 
     test('preserves legacy null results for missing and falsy values', () => {

@@ -837,6 +837,77 @@ export function diffArrayWithIdGuard(
     return ops
 }
 
+export type HashMismatchRemote = {
+    serverHash?: string
+    keyHashes?: Record<string, string>
+    characterHashes?: Record<string, string>
+    duplicateCharIds?: string[]
+}
+
+export type HashMismatchReport = {
+    localHash: string
+    serverHash?: string
+    roots: { mismatched: string[]; onlyLocal: string[]; onlyRemote: string[] }
+    characters: { mismatched: string[]; onlyLocal: string[]; onlyRemote: string[] }
+    /** chaIds that appear more than once in the local baseline (first occurrence is the one compared). */
+    duplicateCharIds: string[]
+    /** chaIds the server reported as repeated in its own characters array. */
+    serverDuplicateCharIds: string[]
+    /** Every compared block agrees yet the document hash differs — key set or composition problem. */
+    compositionOnly: boolean
+}
+
+/** UTF-8 byte length of a string without encoding it. */
+export function utf8ByteLength(str: string): number {
+    let bytes = str.length
+    for (let i = 0; i < str.length; i++) {
+        const code = str.charCodeAt(i)
+        if (code < 0x80) continue
+        if (code < 0x800) { bytes += 1; continue }
+        if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
+            const next = str.charCodeAt(i + 1)
+            if (next >= 0xDC00 && next <= 0xDFFF) {
+                // Surrogate pair: 2 UTF-16 units, 4 UTF-8 bytes.
+                bytes += 2
+                i++
+                continue
+            }
+        }
+        bytes += 2
+    }
+    return bytes
+}
+
+/**
+ * String map that keeps the UTF-8 byte total of its values. Sizes are counted
+ * once per stored string, so the patcher's running payload estimate costs
+ * only as much as the entries that changed.
+ */
+class JsonSizeMap extends Map<string, string> {
+    private sizes = new Map<string, number>()
+    totalBytes = 0
+
+    override set(key: string, value: string): this {
+        this.totalBytes -= this.sizes.get(key) ?? 0
+        const bytes = utf8ByteLength(value)
+        this.sizes.set(key, bytes)
+        this.totalBytes += bytes
+        return super.set(key, value)
+    }
+
+    override delete(key: string): boolean {
+        this.totalBytes -= this.sizes.get(key) ?? 0
+        this.sizes.delete(key)
+        return super.delete(key)
+    }
+
+    override clear(): void {
+        this.sizes.clear()
+        this.totalBytes = 0
+        super.clear()
+    }
+}
+
 export class RisuSavePatcher {
     private lastSyncedDb: any;
     private hashBlocks: { [key: string]: number } = {};
@@ -857,10 +928,17 @@ export class RisuSavePatcher {
     // like "__proto__" on a plain object would silently hit the prototype
     // setter instead of storing — corrupting the skip checks and, worse, the
     // modules hash fold. Map keys are also type-strict (1 !== "1").
-    private lastRootKeyJsons = new Map<string, string>();
-    private lastCharJsons = new Map<string, string>();
-    private lastModuleJsons = new Map<string, string>();
+    private lastRootKeyJsons = new JsonSizeMap();
+    private lastCharJsons = new JsonSizeMap();
+    private lastModuleJsons = new JsonSizeMap();
+    // UTF-8 size of the baseline presets block (presets have no per-item
+    // string cache); refreshed only when presets are diffed.
+    private presetBytes = 0;
     private moduleItemHashes = new Map<string, number>();
+    // chaIds whose stubbed body hashed differently from the baseline in the
+    // last set(): the characters the client actually changed, whether or not
+    // the tracker listed them. A rebase overlays exactly these.
+    private lastChangedCharacterIds: string[] = [];
 
     constructor(options: { trustTrackedPluginBlocks?: boolean } = {}) {
         // Opt-in keeps the exported patcher's defensive legacy behaviour for
@@ -871,10 +949,8 @@ export class RisuSavePatcher {
     trustTrackedPluginBlockChanges() {
         // Once the first server sync has succeeded, the patcher baseline and
         // the Svelte tracker describe the same state. From then on the dirty
-        // flags are authoritative and these large JSON baselines are needless.
+        // flags are authoritative. Cached JSON also supplies payload-size estimates.
         this.trustTrackedPluginBlocks = true
-        this.lastRootKeyJsons.delete('plugins')
-        this.lastRootKeyJsons.delete('pluginCustomStorage')
     }
 
     hash(): string {
@@ -891,6 +967,97 @@ export class RisuSavePatcher {
         return (rootHash >>> 0).toString(16);
     }
 
+    /** chaIds the baseline (what this client last synced against) lists as deactivated. */
+    baselineArchivedCharacterIds(): Set<string> {
+        const list = this.lastSyncedDb?.nodeOnlyArchivedCharacters
+        return new Set(
+            (Array.isArray(list) ? list : [])
+                .map((stub: any) => stub?.chaId)
+                .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0),
+        )
+    }
+
+    /** The baseline itself (what this client last synced against). Read-only
+     *  by contract: set() replaces it with a fresh object rather than mutating
+     *  it, so a reference taken before set() stays the pre-attempt view. */
+    baselineDb(): any {
+        return this.lastSyncedDb ?? null
+    }
+
+    /** chaIds whose body changed against the baseline in the last set(). */
+    changedCharacterIdsOfLastSet(): string[] {
+        return [...this.lastChangedCharacterIds]
+    }
+
+    /**
+     * Approximate size of the payload a full write of the synced state would
+     * send (RisuSaveEncoder output), summed from the per-entry JSON this
+     * patcher already keeps. Leaves out only block headers and root key
+     * names, a few KB, so it stands in for a real encode between full writes.
+     */
+    estimatePayloadBytes(): number {
+        return this.lastRootKeyJsons.totalBytes
+            + this.lastCharJsons.totalBytes
+            + this.lastModuleJsons.totalBytes
+            + this.presetBytes
+    }
+
+    /**
+     * Compare this baseline's per-key hashes with the ones the server sent on
+     * a hash-mismatch 409, naming the root keys and characters that diverged.
+     * Diagnostic only — never changes the baseline.
+     */
+    describeHashMismatch(remote: HashMismatchRemote): HashMismatchReport {
+        const localHash = this.hash()
+        const roots = { mismatched: [] as string[], onlyLocal: [] as string[], onlyRemote: [] as string[] }
+        const characters = { mismatched: [] as string[], onlyLocal: [] as string[], onlyRemote: [] as string[] }
+
+        const remoteKeys = remote.keyHashes ?? {}
+        const localKeys = Object.keys(this.lastSyncedDb)
+        for (const key of localKeys) {
+            if (!Object.hasOwn(remoteKeys, key)) {
+                if (remote.keyHashes) roots.onlyLocal.push(key)
+                continue
+            }
+            if (Number.parseInt(remoteKeys[key], 16) !== this.hashBlocks[key]) roots.mismatched.push(key)
+        }
+        for (const key of Object.keys(remoteKeys)) {
+            if (!Object.hasOwn(this.lastSyncedDb, key)) roots.onlyRemote.push(key)
+        }
+
+        // Characters are keyed the way the server keys them: chaId, or
+        // `#index` when it is missing. Hash the baseline entry directly (it
+        // already holds stubbed chats) instead of reading hashBlocks[chaId],
+        // which is undefined for an id-less character and last-writer-wins
+        // for duplicates — the very corruptions a mismatch loop may stem from.
+        const remoteChars = remote.characterHashes ?? {}
+        const localCharIds = new Set<string>()
+        const duplicateCharIds: string[] = []
+        const localChars: any[] = Array.isArray(this.lastSyncedDb.characters) ? this.lastSyncedDb.characters : []
+        localChars.forEach((character, index) => {
+            const id = typeof character?.chaId === 'string' && character.chaId ? character.chaId : `#${index}`
+            if (localCharIds.has(id)) {
+                duplicateCharIds.push(id)
+                return
+            }
+            localCharIds.add(id)
+            if (!Object.hasOwn(remoteChars, id)) {
+                if (remote.characterHashes) characters.onlyLocal.push(id)
+                return
+            }
+            if (Number.parseInt(remoteChars[id], 16) !== calculateHash(character)) characters.mismatched.push(id)
+        })
+        for (const id of Object.keys(remoteChars)) {
+            if (!localCharIds.has(id)) characters.onlyRemote.push(id)
+        }
+
+        const serverDuplicateCharIds = Array.isArray(remote.duplicateCharIds) ? [...remote.duplicateCharIds] : []
+        const compositionOnly = [roots, characters]
+            .every((group) => group.mismatched.length === 0 && group.onlyLocal.length === 0 && group.onlyRemote.length === 0)
+            && duplicateCharIds.length === 0 && serverDuplicateCharIds.length === 0
+        return { localHash, serverHash: remote.serverHash, roots, characters, duplicateCharIds, serverDuplicateCharIds, compositionOnly }
+    }
+
     async init(data: any) {
         this.lastSyncedDb = normalizeJSON(data);
         if (!Array.isArray(this.lastSyncedDb.characters)) {
@@ -904,6 +1071,14 @@ export class RisuSavePatcher {
             if (key !== 'characters') {
                 this.hashBlocks[key] = calculateHash(this.lastSyncedDb[key]);
             }
+        }
+        // Plugin values live in the server kv (pluginStorageStore); the DB
+        // field is always {} on the server after its boot migration. Pin the
+        // baseline to {} so hash() matches the server's calculateHash(db) and
+        // set() never diffs (or copies) whatever a stale client object holds.
+        if (Object.hasOwn(this.lastSyncedDb, 'pluginCustomStorage')) {
+            this.lastSyncedDb.pluginCustomStorage = {};
+            this.hashBlocks['pluginCustomStorage'] = calculateHash({});
         }
 
         for (let i = 0; i < this.lastSyncedDb.characters.length; i++) {
@@ -923,19 +1098,16 @@ export class RisuSavePatcher {
         // from the normalized form means any normalize-affecting value (shared
         // ref, Date, non-finite) makes raw≠baseline and falls safely to full path.
         const { characters: _c, botPresets: _b, modules: _m, ...normRootOnly } = this.lastSyncedDb
-        if (this.trustTrackedPluginBlocks) {
-            delete normRootOnly.plugins
-            delete normRootOnly.pluginCustomStorage
-        }
-        this.lastRootKeyJsons = new Map();
+        this.presetBytes = utf8ByteLength(JSON.stringify(this.lastSyncedDb.botPresets ?? []))
+        this.lastRootKeyJsons = new JsonSizeMap();
         for (const key of Object.keys(normRootOnly)) {
             this.lastRootKeyJsons.set(key, JSON.stringify(normRootOnly[key]))
         }
-        this.lastCharJsons = new Map();
+        this.lastCharJsons = new JsonSizeMap();
         for (const character of this.lastSyncedDb.characters) {
             if (character?.chaId) this.lastCharJsons.set(character.chaId, JSON.stringify(character))
         }
-        this.lastModuleJsons = new Map();
+        this.lastModuleJsons = new JsonSizeMap();
         this.moduleItemHashes = new Map();
         const normModulesInit = Array.isArray(this.lastSyncedDb.modules) ? this.lastSyncedDb.modules : []
         for (const m of normModulesInit) {
@@ -946,10 +1118,77 @@ export class RisuSavePatcher {
         }
     }
 
+    /**
+     * Advance the patch baseline after the server accepts an out-of-band asset
+     * manifest edit. The reactive DB is updated by the caller; this method keeps
+     * the next /api/patch expectedHash and diff pre-image on the same revision.
+     */
+    updateAssetManifestBaseline(
+        kind: 'module' | 'character' | 'persona-module',
+        ownerId: string,
+        descriptor: any,
+    ): boolean {
+        const nextDescriptor = normalizeJSON(descriptor)
+        if (kind === 'module') {
+            const modules = Array.isArray(this.lastSyncedDb.modules) ? this.lastSyncedDb.modules : []
+            const index = modules.findIndex((owner: any) => owner?.id === ownerId || owner?.assetManifest?.ownerId === ownerId)
+            if (index < 0) return false
+            const nextOwner = { ...modules[index], assetManifest: nextDescriptor }
+            const nextModules = modules.slice()
+            nextModules[index] = nextOwner
+            this.lastSyncedDb = { ...this.lastSyncedDb, modules: nextModules }
+            if (typeof nextOwner?.id === 'string' && nextOwner.id) {
+                this.lastModuleJsons.set(nextOwner.id, JSON.stringify(nextOwner))
+                this.moduleItemHashes.set(nextOwner.id, calculateHash(nextOwner))
+            }
+            let modulesHash = SEED_ARRAY
+            for (const module of nextModules) {
+                const cached = typeof module?.id === 'string' ? this.moduleItemHashes.get(module.id) : undefined
+                modulesHash = (Math.imul(modulesHash, PRIME_MULTIPLIER) + (cached ?? calculateHash(module))) >>> 0
+            }
+            this.hashBlocks.modules = modulesHash
+            return true
+        }
+
+        if (kind === 'character') {
+            const characters = Array.isArray(this.lastSyncedDb.characters) ? this.lastSyncedDb.characters : []
+            const index = characters.findIndex((owner: any) => owner?.chaId === ownerId || owner?.additionalAssetManifest?.ownerId === ownerId)
+            if (index < 0) return false
+            const nextOwner = { ...characters[index], additionalAssetManifest: nextDescriptor }
+            const nextCharacters = characters.slice()
+            nextCharacters[index] = nextOwner
+            this.lastSyncedDb = { ...this.lastSyncedDb, characters: nextCharacters }
+            if (nextOwner?.chaId) {
+                this.hashBlocks[nextOwner.chaId] = calculateHash(nextOwner)
+                this.lastCharJsons.set(nextOwner.chaId, JSON.stringify(nextOwner))
+            }
+            return true
+        }
+
+        const personas = Array.isArray(this.lastSyncedDb.personas) ? this.lastSyncedDb.personas : []
+        const index = personas.findIndex((owner: any) =>
+            owner?.id === ownerId || owner?.personaId === ownerId || owner?.embeddedModule?.assetManifest?.ownerId === ownerId)
+        if (index < 0) return false
+        const nextOwner = {
+            ...personas[index],
+            embeddedModule: {
+                ...personas[index]?.embeddedModule,
+                assetManifest: nextDescriptor,
+            },
+        }
+        const nextPersonas = personas.slice()
+        nextPersonas[index] = nextOwner
+        this.lastSyncedDb = { ...this.lastSyncedDb, personas: nextPersonas }
+        this.hashBlocks.personas = calculateHash(nextPersonas)
+        this.lastRootKeyJsons.set('personas', JSON.stringify(nextPersonas))
+        return true
+    }
+
     async set(data: any, toSave: toSaveType): Promise<{ patch: any[]; expectedHash: string }> {
         const { compare } = await import('fast-json-patch')
         const expectedHash: string = this.hash();
         const patch: any[] = []
+        this.lastChangedCharacterIds = []
 
         const {
             characters: lastCharacters = [],
@@ -981,7 +1220,13 @@ export class RisuSavePatcher {
         // (see init()) so normalize-affected data always falls to the full path.
         const nextRoot: any = {}
         const removedRootKeys = new Set(Object.keys(lastRoot))
+        // Excluded from the diff entirely (see init()): never emit ops for it.
+        if (Object.hasOwn(lastRoot, 'pluginCustomStorage')) {
+            removedRootKeys.delete('pluginCustomStorage')
+            nextRoot.pluginCustomStorage = lastRoot.pluginCustomStorage
+        }
         for (const key of Object.keys(curRoot)) {
+            if (key === 'pluginCustomStorage') continue
             // An own '__proto__' key can't round-trip through JSON Patch — the
             // server's applyPatch rejects any op touching it (prototype-pollution
             // guard), failing every save. The old whole-root normalizeJSON
@@ -1075,13 +1320,13 @@ export class RisuSavePatcher {
             for (const p of compare(before, { [key]: normalized })) patch.push(p)
             this.lastSyncedDb[key] = normalized
             this.hashBlocks[key] = calculateHash(normalized)
-            if (!this.trustTrackedPluginBlocks) {
-                this.lastRootKeyJsons.set(key, JSON.stringify(normalized))
-            }
+            this.lastRootKeyJsons.set(key, JSON.stringify(normalized))
         }
 
         updateTrackedRootBlock('plugins', curPlugins, toSave.plugins)
-        updateTrackedRootBlock('pluginCustomStorage', curPluginCustomStorage, toSave.pluginCustomStorage)
+        if (Object.hasOwn(this.lastSyncedDb, 'pluginCustomStorage')) {
+            nextRoot.pluginCustomStorage = this.lastSyncedDb.pluginCustomStorage
+        }
 
         if (toSave.botPreset) {
             const normBotPresets = normalizeJSON(curBotPresets) ?? []
@@ -1089,6 +1334,7 @@ export class RisuSavePatcher {
             for (const op of ops) patch.push(op)
             this.hashBlocks['botPresets'] = calculateHash(normBotPresets);
             this.lastSyncedDb.botPresets = normBotPresets;
+            this.presetBytes = utf8ByteLength(JSON.stringify(normBotPresets));
         }
 
         if (toSave.modules) {
@@ -1117,7 +1363,7 @@ export class RisuSavePatcher {
                 patch.push({ op: 'replace', path: '/modules', value: normModules })
                 this.hashBlocks['modules'] = calculateHash(normModules);
                 this.lastSyncedDb.modules = normModules;
-                this.lastModuleJsons = new Map();
+                this.lastModuleJsons = new JsonSizeMap();
                 this.moduleItemHashes = new Map();
                 for (const m of normModules) {
                     if (typeof m?.id === 'string' && m.id) {
@@ -1173,18 +1419,24 @@ export class RisuSavePatcher {
             const normChars = normalizeJSON(curCharacters.map(withStubs))
             patch.push({ op: 'replace', path: '/characters', value: normChars })
             // Update all character hashes
+            const previousCharHashes = new Map<string, number>()
             for (const lastId of lastIds) {
-                if (lastId) delete this.hashBlocks[lastId];
+                if (lastId) {
+                    previousCharHashes.set(lastId, this.hashBlocks[lastId])
+                    delete this.hashBlocks[lastId];
+                }
             }
             for (const char of normChars) {
                 if (char?.chaId) {
-                    this.hashBlocks[char.chaId] = calculateHash(char);
+                    const charHash = calculateHash(char)
+                    if (previousCharHashes.get(char.chaId) !== charHash) this.lastChangedCharacterIds.push(char.chaId)
+                    this.hashBlocks[char.chaId] = charHash;
                 }
             }
             this.lastSyncedDb.characters = normChars;
             // Rebuild the cheap baselines from the NORMALIZED chars (the server's
             // state), not the raw input — see init().
-            this.lastCharJsons = new Map();
+            this.lastCharJsons = new JsonSizeMap();
             for (const char of normChars) {
                 if (char?.chaId) this.lastCharJsons.set(char.chaId, JSON.stringify(char))
             }
@@ -1210,6 +1462,7 @@ export class RisuSavePatcher {
                 const changedByHash = !!(curCharId && curCharHash !== this.hashBlocks[curCharId])
 
                 if (trackedBySave || changedByHash) {
+                    if (changedByHash && curCharId) this.lastChangedCharacterIds.push(curCharId)
                     // Iterate instead of spreading — a single character's diff
                     // can exceed spread-argument limits (e.g. a shifted
                     // multi-thousand-entry lorebook). Same rule as the

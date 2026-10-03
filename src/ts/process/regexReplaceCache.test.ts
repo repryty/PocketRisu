@@ -4,9 +4,13 @@ import { cachedRegexReplace, clearRegexReplaceCache } from './regexReplaceCache'
 class CountingRegExp extends RegExp {
     replacements = 0
 
-    override [Symbol.replace](value: string, replacement: string) {
+    override [Symbol.replace](value: string, replacement: string): string
+    override [Symbol.replace](value: string, replacement: (substring: string, ...args: any[]) => string): string
+    override [Symbol.replace](value: string, replacement: string | ((substring: string, ...args: any[]) => string)) {
         this.replacements++
-        return super[Symbol.replace](value, replacement)
+        return typeof replacement === 'string'
+            ? super[Symbol.replace](value, replacement)
+            : super[Symbol.replace](value, replacement)
     }
 }
 

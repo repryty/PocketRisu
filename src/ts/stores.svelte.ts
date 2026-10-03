@@ -1,4 +1,5 @@
-import { writable } from "svelte/store";
+import { get, writable } from "svelte/store";
+import { MEMORY_PRESET_DEFAULT, MEMORY_PRESET_OFF, getMemoryPreset, resolveMemoryPresetId, setChatMemoryPreset } from './process/memory/memoryPresets'
 import type { character, Database } from "./storage/database.svelte";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import type { alertData } from "./alert";
@@ -7,13 +8,21 @@ import { deepTouch } from "./gui/deepTouch.svelte";
 import { resetScriptCache } from "./process/scripts";
 import type { hubType } from "./characterCards";
 import type { PluginSafetyErrors } from "./plugins/pluginSafety";
+import { isWideShell, sidebarStateAfterResize } from "./gui/shellBreakpoint";
+
+let lastShellWidth: number | undefined
 
 function updateSize(){
     SizeStore.set({
         w: window.innerWidth,
         h: window.innerHeight
     })
-    DynamicGUI.set(window.innerWidth <= 1024)
+    DynamicGUI.set(!isWideShell(window.innerWidth))
+    // Crossing the docked/overlay breakpoint resets the sidebar to what a
+    // boot at the new width would pick; anything else is left alone (#79).
+    const sidebar = sidebarStateAfterResize(lastShellWidth, window.innerWidth)
+    lastShellWidth = window.innerWidth
+    if (sidebar !== undefined) sideBarStore.set(sidebar)
 }
 
 export const SizeStore = writable({
@@ -25,7 +34,7 @@ export const loadedStore = writable(false)
 export const isTouchDevice = writable(typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
 export const DynamicGUI = writable(false)
 export const sideBarClosing = writable(false)
-export const sideBarStore = writable(window.innerWidth > 1024)
+export const sideBarStore = writable(isWideShell(window.innerWidth))
 export const leftBarCollapsed = writable(false)
 export const selectedCharID = writable(-1)
 export const chatDeselected = writable(false)
@@ -39,6 +48,10 @@ export const botMakerMode = writable(false)
 // context instead of reading this stale global value.
 export const legacyModuleBackgroundEmbedding = writable('')
 export const openPresetList = writable(false)
+// Character manager popup (desktop overlay; mobile mounts it inline).
+export const openCharacterManager = writable(false)
+// Folder settings dialog target: characterOrder folder id, or null when closed.
+export const folderSettingsTarget = writable<string | null>(null)
 export const presetSelectCallback = writable<((index: number) => void) | null>(null)
 export const openModelPresetList = writable(false)
 export const modelPresetSelectCallback = writable<((id: string) => void) | null>(null)
@@ -53,7 +66,9 @@ export const openModuleListStore = writable(false)
 export const openThemePresetList = writable(false)
 export const openPersonaList = writable(false)
 export const personaSelectCallback = writable<((index: number) => void) | null>(null)
-export const openHypaV3PresetList = writable(false)
+export const openMemoryPresetList = writable(false)
+/** Receives a preset id, 'off' or 'default' from the memory preset picker. */
+export const memoryPresetSelectCallback = writable<((value: string) => void) | null>(null)
 export const bookmarkListOpen = writable(false)
 export const MobileGUI = writable(false)
 export const MobileGUIStack = writable(0)
@@ -79,13 +94,16 @@ export const SystemSubmenuIndex = writable(0)
 // mode gear button can deep-link to the Sidebar tab — see src/ts/routing
 // (AccessibilityTab) and Setting/Pages/AccessibilitySettings.svelte.
 export const AccessibilitySubmenuIndex = writable(0)
+export const AdvancedSubmenuIndex = writable(0)
 // Sub-tab indices for the remaining tabbed settings pages. Stores (instead of
 // page-local $state) so the settings search can deep-link to a specific tab —
 // see src/ts/setting/searchIndex.ts (navigateToSearchResult).
 export const DisplaySubmenuIndex = writable(0)
 export const BotSubmenuIndex = writable(0)
 export const PromptPresetSubmenuIndex = writable(0)
-export const OtherBotsSubmenuIndex = writable(0)
+/** One-shot: open the prompt preset page directly in its editor (settings search deep link). */
+export const PromptPresetEditorOpen = writable(false)
+export const OtherBotsSubmenuIndex = writable(1)
 export const InlayGallerySubmenuIndex = writable(0)
 // List-view tab of the Model Preset page (Presets / API keys / Options).
 // Distinct from the editor's own sub-tabs, which stay page-local.
@@ -144,6 +162,7 @@ export function createSimpleCharacter(char:character){
         customscript: char.customscript,
         chaId: char.chaId,
         additionalAssets: char.additionalAssets,
+        additionalAssetManifest: char.additionalAssetManifest,
         virtualscript: char.virtualscript,
         emotionImages: char.emotionImages,
         triggerscript: char.triggerscript,
@@ -155,6 +174,13 @@ export function createSimpleCharacter(char:character){
 
 updateSize()
 window.addEventListener("resize", updateSize);
+// A foldable or split-screen change can land while the page is hidden and
+// leave no resize behind; re-sample when it comes back into view.
+window.addEventListener("orientationchange", updateSize);
+window.addEventListener("pageshow", updateSize);
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === 'visible') updateSize()
+});
 export const DBState = $state({
     db: {} as any as Database
 });
@@ -167,11 +193,27 @@ export const loadingOverlayStore = writable<{
     active: boolean,
     text: string,
     onCancel?: (() => void) | null,
+    owner?: symbol,
 }>({
     active: false,
     text: '',
     onCancel: null,
 })
+
+/**
+ * Show the overlay for one operation. The returned function hides it only
+ * while that operation still owns it, so a slow earlier load finishing late
+ * cannot hide the overlay of the load that replaced it.
+ */
+export function claimLoadingOverlay(text: string, onCancel: (() => void) | null = null): () => void {
+    const owner = Symbol('loading-overlay')
+    loadingOverlayStore.set({ active: true, text, onCancel, owner })
+    return () => {
+        if (get(loadingOverlayStore).owner === owner) {
+            loadingOverlayStore.set({ active: false, text: '', onCancel: null })
+        }
+    }
+}
 
 export const QuickSettings = $state({
     open: false,
@@ -236,10 +278,16 @@ $effect.root(() => {
         selIdState.selId = v
 
         if (DBState?.db?.characters?.[selIdState.selId]) {
-            if (DBState.db.hypaV3 && DBState.db.hypaV3Presets?.[DBState.db.hypaV3PresetId]?.settings?.alwaysToggleOn) {
-                const char = DBState.db.characters[selIdState.selId]
-                if (char?.chats?.[char.chatPage]) {
-                    char.chats[char.chatPage].supaMemory = true
+            // "Always toggle on": a chat with no binding of its own follows the
+            // global default when that preset asks for it. Explicit bindings
+            // (including an explicit 'off') are respected.
+            const char = DBState.db.characters[selIdState.selId]
+            const chat = char?.chats?.[char.chatPage]
+            if (chat && chat.memoryPresetId === undefined && char.memoryPresetId === undefined) {
+                const preset = getMemoryPreset(DBState.db, DBState.db.memoryPresetId)
+                if (preset?.canon?.source === 'hypaV3' && preset.canon.settings.alwaysToggleOn
+                    && resolveMemoryPresetId(DBState.db, char, chat) === MEMORY_PRESET_OFF) {
+                    setChatMemoryPreset(DBState.db, char, chat, MEMORY_PRESET_DEFAULT)
                 }
             }
         }
@@ -252,6 +300,7 @@ $effect.root(() => {
         DBState?.db?.enabledModules
         DBState?.db?.enabledModules?.length
         DBState?.db?.characters?.[selIdState.selId]?.chats?.[DBState?.db?.characters?.[selIdState.selId]?.chatPage]?.modules?.length
+        DBState?.db?.characters?.[selIdState.selId]?.modules?.length
         DBState?.db?.characters?.[selIdState.selId]?.hideChatIcon
         DBState?.db?.characters?.[selIdState.selId]?.backgroundHTML
         DBState?.db?.moduleIntergration

@@ -79,6 +79,17 @@
         y:number,
         content:string,
     } = $state(null)
+    // Branch tree rows: y=0 is the greeting (not part of chat.message), the
+    // rest map to message[y-1]. Indexing message[-1] for the first row threw
+    // a TypeError on every hover.
+    function branchNodeContent(obj: { chatId: number, y: number }): string {
+        const char = getCurrentCharacter()
+        const chat = char.chats[obj.chatId]
+        if(obj.y === 0){
+            return (chat.fmIndex === -1 ? char.firstMessage : char.alternateGreetings?.[chat.fmIndex ?? 0]) ?? ''
+        }
+        return chat.message[obj.y - 1]?.data ?? ''
+    }
     let copiedKey: string | null = $state(null)
     let togglePresetShowAll = $state(false)
 
@@ -258,14 +269,19 @@
                     }}>✖</button>
                 </div>
                 {#if generationInfoMenuIndex === 0}
+                    <!-- Recovered messages from older jobs can lack maxContext
+                         (and tokens); fall back to 0% instead of a NaN% gradient. -->
+                    {@const graphMaxContext = $alertGenerationInfoStore.genInfo.maxContext ?? 0}
+                    {@const graphInputPct = graphMaxContext > 0 ? (($alertGenerationInfoStore.genInfo.inputTokens ?? 0) / graphMaxContext) * 100 : 0}
+                    {@const graphTotalPct = graphMaxContext > 0 ? ((($alertGenerationInfoStore.genInfo.outputTokens ?? 0) + ($alertGenerationInfoStore.genInfo.inputTokens ?? 0)) / graphMaxContext) * 100 : 0}
                     <div class="mt-4 flex justify-center w-full">
                         <div class="w-32 h-32 border-darkborderc border-4 rounded-lg" style:background={
                             `linear-gradient(0deg,
                             rgb(59,130,246) 0%,
-                            rgb(59,130,246) ${($alertGenerationInfoStore.genInfo.inputTokens / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
-                            rgb(34 197 94) ${($alertGenerationInfoStore.genInfo.inputTokens / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
-                            rgb(34 197 94) ${(($alertGenerationInfoStore.genInfo.outputTokens + $alertGenerationInfoStore.genInfo.inputTokens) / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
-                            rgb(156 163 175) ${(($alertGenerationInfoStore.genInfo.outputTokens + $alertGenerationInfoStore.genInfo.inputTokens) / $alertGenerationInfoStore.genInfo.maxContext) * 100}%,
+                            rgb(59,130,246) ${graphInputPct}%,
+                            rgb(34 197 94) ${graphInputPct}%,
+                            rgb(34 197 94) ${graphTotalPct}%,
+                            rgb(156 163 175) ${graphTotalPct}%,
                             rgb(156 163 175) 100%)`
                         }>
 
@@ -287,6 +303,10 @@
                     <span class="text-blue-500 justify-self-end">{$alertGenerationInfoStore.idx}</span>
                     <span class="text-amber-500">Model</span>
                     <span class="text-amber-500 justify-self-end">{$alertGenerationInfoStore.genInfo.model}</span>
+                    {#if $alertGenerationInfoStore.genInfo.modelId}
+                        <span class="text-amber-500">Model ID</span>
+                        <span class="text-amber-500 justify-self-end">{$alertGenerationInfoStore.genInfo.modelId}</span>
+                    {/if}
                     <span class="text-green-500">ID</span>
                     <span class="text-green-500 justify-self-end">{DBState.db.characters[$selectedCharID].chats[DBState.db.characters[$selectedCharID].chatPage].message[$alertGenerationInfoStore.idx].chatId ?? "None"}</span>
                     <span class="text-red-500">GenID</span>
@@ -581,21 +601,19 @@
                 style="top: {obj.y * 80 + 24}px; left: {obj.x * 80 + 24}px"
                 onmouseenter={() => {
                     if(branchHover === null){
-                        const char = getCurrentCharacter()
                         branchHover = {
                             x: obj.x,
                             y: obj.y,
-                            content: char.chats[obj.chatId].message[obj.y - 1].data
+                            content: branchNodeContent(obj)
                         }
                     }
                 }}
                 onclick={() => {
                     if(branchHover === null){
-                        const char = getCurrentCharacter()
                         branchHover = {
                             x: obj.x,
                             y: obj.y,
-                            content: char.chats[obj.chatId].message[obj.y - 1].data
+                            content: branchNodeContent(obj)
                         }
                     }
                 }}
@@ -860,6 +878,11 @@
             fullwidth
             onkeydown={(e) => {
                 if (e.key === 'Enter' && !e.isComposing) {
+                    // Closing the popup returns focus to the button that opened
+                    // it before this key's keypress fires; without preventDefault
+                    // that keypress activates the button and reopens the popup
+                    // (a second "new folder" dialog, then a duplicate folder).
+                    e.preventDefault()
                     alertStore.set({ type: 'none', msg: input })
                 }
             }}

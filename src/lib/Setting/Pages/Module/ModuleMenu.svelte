@@ -1,4 +1,5 @@
 <script lang="ts">
+    import SettingFieldLabel from "src/lib/Setting/Wrappers/SettingFieldLabel.svelte";
     import { language } from "src/lang";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import type { loreBook } from "src/ts/storage/database.svelte";
@@ -8,10 +9,12 @@
     import { DownloadIcon, FolderPlusIcon, HardDriveUploadIcon, ImageIcon, PlusIcon, TrashIcon } from "@lucide/svelte";
     import RegexList from "src/lib/SideBars/Scripts/RegexList.svelte";
     import TriggerList from "src/lib/SideBars/Scripts/TriggerList.svelte";
-    import Check from "src/lib/UI/GUI/CheckInput.svelte";
-    import Help from "src/lib/Others/Help.svelte";
+    import ShSwitch from "src/lib/UI/GUI/ShSwitch.svelte";
+    import SettingTabs from "src/lib/UI/GUI/SettingTabs.svelte";
+    import SettingRowLayout from "src/lib/Setting/Wrappers/SettingRowLayout.svelte";
+    import type { SettingItem } from "src/ts/setting/types";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
-    import { getFileSrc, saveAsset, downloadFile } from "src/ts/globalApi.svelte";
+    import { appendAssetManifestItems, editAssetManifest, forageStorage, getFileSrc, loadAssetManifestItems, recoverAssetManifestConflict, saveAsset, downloadFile } from "src/ts/globalApi.svelte";
     import { alertError, notifySuccess } from "src/ts/alert";
     import { exportRegex, importRegex } from "src/ts/process/scripts";
     import { selectMultipleFile } from "src/ts/util";
@@ -29,16 +32,100 @@
     let { currentModule = $bindable() }: Props = $props();
     let assetFileExtensions:string[] = $state([])
     let assetFilePath:string[] = $state([])
+    let manifestItems:[string, string, string][] = $state([])
+    let manifestOffset = $state(0)
+    let manifestTotal = $state(0)
+    let manifestLoading = $state(false)
+    const manifestPageSize = 100
+
+    async function loadManifestPage(offset = 0) {
+        if (!currentModule.assetManifest) return
+        manifestLoading = true
+        try {
+            const page = await forageStorage.getAssetManifestPage(currentModule.assetManifest, {
+                offset,
+                limit: manifestPageSize,
+            })
+            manifestItems = page.items as [string, string, string][]
+            manifestOffset = page.offset
+            manifestTotal = page.total
+            assetFileExtensions = []
+            assetFilePath = []
+        } finally {
+            manifestLoading = false
+        }
+    }
+
+    async function openAssetsTab() {
+        if (!currentModule.assetManifest) currentModule.assets ??= []
+        submenu = 5
+        if (currentModule.assetManifest) await loadManifestPage(0)
+    }
+
+    async function addManifestAsset(item: [string, string, string]) {
+        if (!currentModule.assetManifest) {
+            currentModule.assets ??= []
+            currentModule.assets.push(item)
+            currentModule.assets = currentModule.assets
+            return
+        }
+        try {
+            currentModule.assetManifest = await editAssetManifest(currentModule.assetManifest, [
+                { type: 'append', item },
+            ])
+            const lastPageOffset = Math.floor((currentModule.assetManifest.count - 1) / manifestPageSize) * manifestPageSize
+            await loadManifestPage(lastPageOffset)
+        } catch (error) {
+            if (!await recoverAssetManifestConflict(error, () => loadManifestPage(0))) throw error
+        }
+    }
+
+    async function renameManifestAsset(index: number, name: string) {
+        if (!currentModule.assetManifest) return
+        try {
+            currentModule.assetManifest = await editAssetManifest(currentModule.assetManifest, [
+                { type: 'rename', index: manifestOffset + index, name },
+            ])
+            await loadManifestPage(manifestOffset)
+        } catch (error) {
+            if (!await recoverAssetManifestConflict(error, () => loadManifestPage(0))) throw error
+        }
+    }
+
+    async function removeManifestAsset(index: number) {
+        if (!currentModule.assetManifest) {
+            currentModule.assets?.splice(index, 1)
+            currentModule.assets = currentModule.assets
+            return
+        }
+        try {
+            currentModule.assetManifest = await editAssetManifest(currentModule.assetManifest, [
+                { type: 'remove', index: manifestOffset + index },
+            ])
+            const nextOffset = Math.min(manifestOffset, Math.max(0, Math.floor((currentModule.assetManifest.count - 1) / manifestPageSize) * manifestPageSize))
+            await loadManifestPage(nextOffset)
+        } catch (error) {
+            if (!await recoverAssetManifestConflict(error, () => loadManifestPage(0))) throw error
+        }
+    }
+
+    async function openCurrentAssetViewer() {
+        const assets = currentModule.assetManifest
+            ? await loadAssetManifestItems(currentModule.assetManifest) as [string, string, string][]
+            : currentModule.assets
+        openAssetViewer(currentModule.name, assets)
+    }
 
     $effect.pre(() => {
         if(DBState.db.useAdditionalAssetsPreview){
-            if(currentModule?.assets){
-                for(let i = 0; i < currentModule.assets.length; i++){
-                    if(currentModule.assets[i].length > 2 && currentModule.assets[i][2]) {
-                        assetFileExtensions[i] = currentModule.assets[i][2]
+            const assets = currentModule?.assetManifest ? manifestItems : currentModule?.assets
+            if(assets){
+                for(let i = 0; i < assets.length; i++){
+                    if(assets[i].length > 2 && assets[i][2]) {
+                        assetFileExtensions[i] = assets[i][2]
                     } else 
-                        assetFileExtensions[i] = currentModule.assets[i][1].split('.').pop()
-                        getFileSrc(currentModule.assets[i][1]).then((filePath) => {
+                        assetFileExtensions[i] = assets[i][1].split('.').pop()
+                        getFileSrc(assets[i][1]).then((filePath) => {
                         assetFilePath[i] = filePath
                     })
                 }
@@ -148,117 +235,118 @@
             currentModule.trigger = currentModule.trigger
         }
     }
+
+    // Tab switches keep the legacy side effects: each tab lazily initializes
+    // the module field it edits before showing it.
+    function selectTab(value: number) {
+        if (value === 1) {
+            currentModule.lorebook ??= []
+        } else if (value === 2) {
+            currentModule.regex ??= []
+        } else if (value === 3) {
+            currentModule.trigger ??= [{
+                comment: "",
+                type: "manual",
+                conditions: [],
+                effect: [{
+                    type: "v2Header",
+                    code: "",
+                    indent: 0
+                }]
+            }, {
+                comment: "New Event",
+                type: 'manual',
+                conditions: [],
+                effect: []
+            }]
+        } else if (value === 5) {
+            openAssetsTab()
+            return
+        }
+        submenu = value
+    }
+
+    // Row-layout field descriptor for SettingRowLayout (label + inline help).
+    function field(id: string, label: string, helpKey?: string): SettingItem {
+        return { id: `module.${id}`, type: 'custom', fallbackLabel: label, helpKey }
+    }
 </script>
 
-<div class="flex w-full rounded-md border border-darkborderc mb-4 overflow-x-auto h-16 min-h-16 overflow-y-clip">
-    <button onclick={() => {
-        submenu = 0
-    }} class="p-2 flex-1 border-r border-darkborderc" class:bg-darkbutton={submenu === 0}>
-        <span>{language.basicInfo}</span>
-    </button>
-    <button onclick={() => {
-        currentModule.lorebook ??= []
-        submenu = 1
-    }} class="p2 flex-1 border-r border-darkborderc" class:bg-darkbutton={submenu === 1}>
-        <span>{language.loreBook}</span>
-    </button>
-    <button onclick={() => {
-        currentModule.regex ??= []
-        submenu = 2
-    }} class="p-2 flex-1 border-r border-darkborderc" class:bg-darkbutton={submenu === 2}>
-        <span>{language.regexScript}</span>
-    </button>
-    <button onclick={() => {
-        currentModule.trigger ??= [{
-            comment: "",
-            type: "manual",
-            conditions: [],
-            effect: [{
-                type: "v2Header",
-                code: "",
-                indent: 0
-            }]
-        }, {
-            comment: "New Event",
-            type: 'manual',
-            conditions: [],
-            effect: []
-        }]
-        submenu = 3
-    }} class="p-2 flex-1 border-r border-darkborderc" class:bg-darkbutton={submenu === 3}>
-        <span>{language.triggerScript}</span>
-    </button>
-    <button onclick={() => {
-        currentModule.assets ??= []
-        submenu = 5
-    }} class="p-2 flex-1" class:bg-darkbutton={submenu === 5}>
-        <span>{language.additionalAssets}</span>
-    </button>
-</div>
+
+<SettingTabs
+    tabs={[
+        { label: language.basicInfo, value: 0 },
+        { label: language.loreBook, value: 1 },
+        { label: language.regexScript, value: 2 },
+        { label: language.triggerScript, value: 3 },
+        { label: language.additionalAssets, value: 5 },
+    ]}
+    bind:selected={() => submenu, selectTab}
+/>
 
 {#if submenu === 0}
-    <span>{language.name} <Help key="moduleName" /></span>
-    <TextInput bind:value={currentModule.name} className="mt-2"/>
-    <span class="mt-4">{language.description} <Help key="moduleDescription" /></span>
-    <TextInput bind:value={currentModule.description} className="mt-2"/>
-    <span class="mt-4">{language.namespace} <Help key="namespace" /></span>
-    <TextInput bind:value={currentModule.namespace} className="mt-2"/>
-    <div class="flex items-center mt-4">
-        <Check bind:check={currentModule.hideIcon} name={language.hideChatIcon}/>
-        <Help key="moduleHideChatIcon" />
+    <div class="flex flex-col [&>*:first-child]:border-t-0">
+        <SettingRowLayout item={field('name', language.name, 'moduleName')} wideControl>
+            {#snippet control()}<TextInput className="sm:w-64 h-8" size="sm" padding fullwidth bind:value={currentModule.name}/>{/snippet}
+        </SettingRowLayout>
+        <SettingRowLayout item={field('description', language.description, 'moduleDescription')} wideControl>
+            {#snippet control()}<TextInput className="sm:w-64 h-8" size="sm" padding fullwidth bind:value={currentModule.description}/>{/snippet}
+        </SettingRowLayout>
+        <SettingRowLayout item={field('namespace', language.namespace, 'namespace')} wideControl>
+            {#snippet control()}<TextInput className="sm:w-64 h-8" size="sm" padding fullwidth bind:value={currentModule.namespace}/>{/snippet}
+        </SettingRowLayout>
+        <SettingRowLayout item={field('hideIcon', language.hideChatIcon, 'moduleHideChatIcon')}>
+            {#snippet control()}<ShSwitch checked={!!currentModule.hideIcon} onCheckedChange={(v) => currentModule.hideIcon = v} />{/snippet}
+        </SettingRowLayout>
+        <div class="py-3 border-t border-darkborderc">
+            <SettingFieldLabel label={language.customPromptTemplateToggle} helpKey="customPromptTemplateToggle" />
+            <TextAreaInput className="mt-2" bind:value={currentModule.customModuleToggle}/>
+        </div>
     </div>
-    <span class="mt-4">{language.customPromptTemplateToggle} <Help key='customPromptTemplateToggle' /></span>
-    <TextAreaInput className="mt-2 mb-4" bind:value={currentModule.customModuleToggle}/>
 {/if}
 {#if submenu === 1 && (Array.isArray(currentModule.lorebook))}
     <LoreBookList externalLoreBooks={currentModule.lorebook} />
-    <div class="text-textcolor2 mt-2 flex">
-        <button onclick={() => {addLorebook()}} class="hover:text-textcolor cursor-pointer ml-1">
-            <PlusIcon />
-        </button>
-        <button onclick={() => {exportLoreBook()}} class="hover:text-textcolor cursor-pointer ml-2">
-            <DownloadIcon />
-        </button>
-        <button onclick={() => {
-            addLorebookFolder()
-        }} class="hover:text-textcolor ml-2  cursor-pointer">
-            <FolderPlusIcon />
-        </button>
-        <button onclick={() => {importLoreBook()}} class="hover:text-textcolor cursor-pointer ml-2">
-            <HardDriveUploadIcon />
-        </button>
+    <div class="mt-2 flex gap-1">
+        <ShButton variant="ghost" size="icon-sm" aria-label="Add" onclick={() => {addLorebook()}}><PlusIcon /></ShButton>
+        <ShButton variant="ghost" size="icon-sm" aria-label="Export" onclick={() => {exportLoreBook()}}><DownloadIcon /></ShButton>
+        <ShButton variant="ghost" size="icon-sm" aria-label="Add folder" onclick={() => {addLorebookFolder()}}><FolderPlusIcon /></ShButton>
+        <ShButton variant="ghost" size="icon-sm" aria-label="Import" onclick={() => {importLoreBook()}}><HardDriveUploadIcon /></ShButton>
     </div>
 {/if}
 
 {#if submenu === 2 && (Array.isArray(currentModule.regex))}
-    <span class="mt-2 flex items-center">{language.backgroundHTML} <Help key="moduleBackgroundEmbedding" /></span>
-    <TextAreaInput bind:value={currentModule.backgroundEmbedding} className="mt-2" placeholder={language.backgroundHTML}/>
-    <span class="mt-4 flex items-center">{language.regexScript} <Help key="moduleRegexList" /></span>
-    <RegexList bind:value={currentModule.regex}/>
-    <div class="text-textcolor2 mt-2 flex gap-2">
-        <button class="font-medium cursor-pointer hover:text-primary" onclick={() => {
-            addRegex()
-        }}><PlusIcon /></button>
-        <button class="font-medium cursor-pointer hover:text-primary" onclick={() => {
-            exportRegex(currentModule.regex)
-        }}><DownloadIcon /></button>
-        <button class="font-medium cursor-pointer hover:text-primary" onclick={async () => {
-            currentModule.regex = await importRegex(currentModule.regex)
-        }}><HardDriveUploadIcon /></button>
+    <div class="flex flex-col">
+        <SettingFieldLabel label={language.backgroundHTML} helpKey="moduleBackgroundEmbedding" />
+        <TextAreaInput bind:value={currentModule.backgroundEmbedding} className="mt-2" placeholder={language.backgroundHTML}/>
+    </div>
+    <div class="flex flex-col py-3 mt-3 border-t border-darkborderc">
+        <SettingFieldLabel label={language.regexScript} helpKey="moduleRegexList" />
+        <RegexList bind:value={currentModule.regex}/>
+        <div class="mt-2 flex gap-1">
+            <ShButton variant="ghost" size="icon-sm" aria-label="Add" onclick={() => {
+                addRegex()
+            }}><PlusIcon /></ShButton>
+            <ShButton variant="ghost" size="icon-sm" aria-label="Export" onclick={() => {
+                exportRegex(currentModule.regex)
+            }}><DownloadIcon /></ShButton>
+            <ShButton variant="ghost" size="icon-sm" aria-label="Import" onclick={async () => {
+                currentModule.regex = await importRegex(currentModule.regex)
+            }}><HardDriveUploadIcon /></ShButton>
+        </div>
     </div>
 {/if}
 
-{#if submenu === 5 && (Array.isArray(currentModule.assets))}
-    {#if hasImageAssets(currentModule.assets)}
+{#if submenu === 5 && (Array.isArray(currentModule.assets) || currentModule.assetManifest)}
+    {#if currentModule.assetManifest || hasImageAssets(currentModule.assets)}
         <ShButton
             className="w-full mb-3"
-            onclick={() => openAssetViewer(currentModule.name, currentModule.assets)}
+            onclick={openCurrentAssetViewer}
         >
             <ImageIcon size={16} />
             <span>{language.viewInAssetViewer}</span>
         </ShButton>
     {/if}
-    <span class="mb-2 flex items-center">{language.additionalAssets} <Help key="moduleAdditionalAssets" /></span>
+    <div class="mb-2 flex flex-col"><SettingFieldLabel label={language.additionalAssets} helpKey="moduleAdditionalAssets" /></div>
     <div class="w-full max-w-full border border-selected rounded-md p-2">
         <table class="contain w-full max-w-full tabler mt-2">
             <tbody>
@@ -267,29 +355,40 @@
                 <th class="font-medium cursor-pointer w-10">
                     <button class="hover:text-primary" onclick={async () => {
                         const da = await selectMultipleFile(['png', 'webp', 'mp4', 'mp3', 'gif', 'jpeg', 'jpg', 'ttf', 'otf', 'css', 'webm', 'woff', 'woff2', 'svg', 'avif'])
-                        currentModule.assets = currentModule.assets ?? []
                         if(!da){
                             return
                         }
+                        const appended: [string, string, string][] = []
                         for(const f of da){
                             const img = f.data
                             const name = f.name
                             const extension = name.split('.').pop().toLowerCase()
                             const imgp = await saveAsset(img,'', extension)
-                            currentModule.assets.push([name, imgp, extension])
-                            currentModule.assets = currentModule.assets
+                            if (currentModule.assetManifest) appended.push([name, imgp, extension])
+                            else await addManifestAsset([name, imgp, extension])
+                        }
+                        if (currentModule.assetManifest && appended.length > 0) {
+                            try {
+                                currentModule.assetManifest = await appendAssetManifestItems(currentModule.assetManifest, appended)
+                                const lastPageOffset = Math.floor((currentModule.assetManifest.count - 1) / manifestPageSize) * manifestPageSize
+                                await loadManifestPage(lastPageOffset)
+                            } catch (error) {
+                                if (!await recoverAssetManifestConflict(error, () => loadManifestPage(0))) throw error
+                            }
                         }
                     }}>
                         <PlusIcon />
                     </button>
                 </th>
             </tr>
-            {#if (!currentModule.assets) || currentModule.assets.length === 0}
+            {#if manifestLoading}
+                <tr><td colspan="3">{language.storageLoading}</td></tr>
+            {:else if currentModule.assetManifest ? manifestTotal === 0 : (!currentModule.assets || currentModule.assets.length === 0)}
                 <tr>
                     <td colspan="3">{language.noData}</td>
                 </tr>
             {:else}
-                {#each currentModule.assets as assets, i}
+                {#each (currentModule.assetManifest ? manifestItems : currentModule.assets) as assets, i}
                     <tr>
                         <td class="font-medium truncate">
                             {#if assetFilePath[i] && DBState.db.useAdditionalAssetsPreview}
@@ -302,15 +401,21 @@
                                     <img src={assetFilePath[i]} class="w-16 h-16 m-1 rounded-md" alt={assets[0]}/>
                                 {/if}
                             {/if}
-                            <TextInput fullwidth marginBottom bind:value={currentModule.assets[i][0]} placeholder="..." />
+                            {#if currentModule.assetManifest}
+                                <TextInput
+                                    fullwidth
+                                    marginBottom
+                                    value={assets[0]}
+                                    onchange={(event) => renameManifestAsset(i, event.currentTarget.value)}
+                                    placeholder="..."
+                                />
+                            {:else}
+                                <TextInput fullwidth marginBottom bind:value={currentModule.assets[i][0]} placeholder="..." />
+                            {/if}
                         </td>
                         
                         <th class="font-medium cursor-pointer w-10">
-                            <button class="hover:text-red-400" onclick={() => {
-                                let additionalAssets = currentModule.assets
-                                additionalAssets.splice(i, 1)
-                                currentModule.assets = additionalAssets
-                            }}>
+                            <button class="hover:text-red-400" onclick={() => removeManifestAsset(i)}>
                                 <TrashIcon />
                             </button>
                         </th>
@@ -319,14 +424,28 @@
             {/if}
             </tbody>
         </table>
+        {#if currentModule.assetManifest && manifestTotal > manifestPageSize}
+            <div class="mt-2 flex items-center justify-between gap-2">
+                <ShButton
+                    disabled={manifestOffset === 0 || manifestLoading}
+                    onclick={() => loadManifestPage(Math.max(0, manifestOffset - manifestPageSize))}
+                >←</ShButton>
+                <span>{manifestOffset + 1}–{Math.min(manifestOffset + manifestItems.length, manifestTotal)} / {manifestTotal}</span>
+                <ShButton
+                    disabled={manifestOffset + manifestPageSize >= manifestTotal || manifestLoading}
+                    onclick={() => loadManifestPage(manifestOffset + manifestPageSize)}
+                >→</ShButton>
+            </div>
+        {/if}
     </div>
 {/if}
 
 {#if submenu === 3 && (Array.isArray(currentModule.trigger))}
     <TriggerList bind:value={currentModule.trigger} lowLevelAble={currentModule.lowLevelAccess} />
 
-    <div class="flex items-center mt-4">
-        <Check bind:check={currentModule.lowLevelAccess} name={language.lowLevelAccess}/>
-        <span> <Help key="lowLevelAccess" name={language.lowLevelAccess}/></span>
+    <div class="mt-4 [&>*:first-child]:border-t-0">
+        <SettingRowLayout item={field('lowLevelAccess', language.lowLevelAccess, 'lowLevelAccess')}>
+            {#snippet control()}<ShSwitch checked={!!currentModule.lowLevelAccess} onCheckedChange={(v) => currentModule.lowLevelAccess = v} />{/snippet}
+        </SettingRowLayout>
     </div>
 {/if}

@@ -20,6 +20,9 @@ export const languageKorean = {
     unknownModel: "에러: 알수없는 모델 선택됨",
     httpError: "요청 에러:",
     noData: "올바른 파일이 아니거나 데이터가 손상됐습니다.",
+    chatBodyMissing: "서버에서 이 채팅 내용을 찾지 못했습니다. 남아 있을 수 있는 메시지를 빈 채팅으로 덮어쓰지 않도록 그대로 두었습니다. 다른 기기나 백업을 확인하세요.",
+    chatLoadFailed: "채팅을 불러오지 못했습니다. 연결을 확인한 뒤 다시 시도하세요.",
+    chatLoadRetry: "다시 불러오기",
     onlyOneChat: "채팅이 하나 이상 필요합니다",
     onlyOnePreset: "프리셋이 하나 이상 필요합니다",
     noUserIcon: "유저 아이콘이 없습니다.",
@@ -42,6 +45,10 @@ export const languageKorean = {
     persistFailureTitle:
       "서버 저장 실패 — 변경사항이 디스크에 반영되지 않습니다",
     persistFailureAttemptedSize: "시도 크기",
+    storageRequestTooLarge:
+      "저장 요청이 너무 커서 실패했습니다 (HTTP 413). 서버 또는 리버스 프록시(Nginx 등)의 요청 본문 크기 제한을 확인하세요.",
+    backupEncryptedAccount:
+      "이 백업은 RisuAI 웹 계정(동기화)에 로그인한 상태에서 내보낸 파일이라 데이터베이스가 암호화되어 있어 PocketRisu에서 읽을 수 없습니다. RisuAI에서 계정을 로그아웃(데이터가 기기로 이동됨)하거나 부분 백업으로 다시 내보낸 뒤 불러와 주세요. 기존 데이터는 바뀌지 않았습니다.",
     chatGuardTitle: "채팅 데이터 보호 작동 — 안전 저장 모드로 전환됨",
     chatGuardDesc:
       "비정상적인 저장 패턴이 차단되어 안전 저장(full-write)으로 전환됐어요. 변경사항은 그 경로로 디스크에 저장됩니다. 반복되면 브라우저 콘솔 로그와 함께 제보해주세요.",
@@ -53,6 +60,17 @@ export const languageKorean = {
       "이 채팅은 서버에서 아직 생성 중이에요. 완료되면 자동으로 채워지니 잠시 기다려주세요.",
     modelJobConnectionLost:
       "연결이 끊겼지만 서버에서 계속 생성 중이에요. 다시 돌아오면 자동으로 이어집니다 — 다시 보내지 않아도 돼요.",
+    chatStillGenerating:
+      "이 채팅은 아직 생성 중이에요. 완료되거나 중지한 뒤 다시 보내주세요.",
+    otherChatGenerating:
+      "다른 채팅에서 생성이 진행 중이에요. 그 채팅이 완료되거나 중지된 뒤 다시 보내주세요.",
+    otherChatGenerationStopConfirm:
+      "다른 채팅에서 3분 넘게 생성 중이라 멈췄을 수 있어요. 그 생성을 중지하고 여기서 보낼 수 있게 할까요?",
+    generationForceReleased:
+      "응답이 스스로 멈추지 않아 생성 상태를 강제로 정리했어요. 다시 보낼 수 있어요.",
+    assetManifestConflictTitle: "다른 세션에서 에셋 목록이 변경되었습니다",
+    assetManifestConflictDesc:
+      "최신 에셋 페이지를 다시 불러왔습니다. 내용을 확인한 뒤 편집을 다시 시도해주세요.",
   },
   showHelp: "도움말 보기",
   help: helpKo,
@@ -526,6 +544,8 @@ export const languageKorean = {
     inlayFilterOrphanMessage: "메시지에 없음",
     inlayScanMessages: "메시지 스캔",
     inlayScanning: "스캔 중...",
+    inlayScanFailed: "메시지 스캔에 실패해 미참조 목록을 표시하지 않습니다",
+    inlayDeleteSkippedReferenced: "다시 스캔한 결과 참조가 확인된 {count}개는 삭제에서 제외했습니다",
     inlayScanDone: "{count}개 메시지 스캔 완료",
   },
   confirm: "확인",
@@ -597,6 +617,33 @@ export const languageKorean = {
   chatLoadInitialPages: "채팅 초기 로딩 개수",
   chatLoadAdditionalPages: "채팅 추가 로딩 개수",
   removeCharacter: "캐릭터 삭제",
+  deactivateCharacter: "캐릭터 비활성화",
+  deactivateCharacterConfirm: (name: string) =>
+    `"${name}" 캐릭터와 채팅을 비활성화합니다.\n\n사용하지 않는 캐릭터를 비활성화하면 로딩과 저장이 가벼워져 성능 개선에 도움이 됩니다. 목록에는 남지만 열 수 없고, 플러그인이나 스크립트, 검색, 데이터셋 내보내기에서는 삭제된 것처럼 보입니다. 데이터는 서버에 보관되며 언제든 다시 활성화할 수 있습니다.\n\n비활성화할까요?`,
+  deactivateCharacterDone: "캐릭터를 비활성화했습니다.",
+  deactivateCharacterLostChats: (name: string, count: number, list: string) =>
+      `"${name}"의 채팅 ${count}개는 서버에도 이 브라우저에도 내용이 없어 열면 빈 채팅으로 보입니다.\n\n${list}\n\n이 채팅들은 빈 채팅으로 보관됩니다. 비활성화할까요?`,
+  deactivateCharacterFailed: "비활성화에 실패했습니다: ",
+  archiveSavePending: "비활성화했지만 아직 서버에 저장하지 못했습니다. 자동으로 다시 저장을 시도합니다.",
+  bulkArchiveBusy: "이미 여러 캐릭터를 처리하는 중입니다. 끝난 뒤 다시 시도하세요.",
+  bulkArchiveProgress: (done: number, total: number, trash: boolean) =>
+    `${trash ? "휴지통으로 옮기는 중" : "비활성화하는 중"}… ${done}/${total}`,
+  bulkArchiveDone: (count: number, trash: boolean) =>
+    trash ? `캐릭터 ${count}개를 휴지통으로 옮겼습니다.` : `캐릭터 ${count}개를 비활성화했습니다.`,
+  bulkArchiveFailed: (done: number, failed: number, list: string) =>
+    `${done}개는 처리했고 ${failed}개는 실패했습니다. 실패한 캐릭터는 그대로 남아 있습니다.\n\n${list}`,
+  bulkArchiveStopped: "변경사항을 서버에 저장하지 못해 나머지 캐릭터는 처리하지 않았습니다. 이미 처리한 캐릭터는 자동으로 다시 저장을 시도합니다.",
+  bulkDeactivateLostChats: (count: number, list: string) =>
+    `캐릭터 ${count}개에 서버에도 이 브라우저에도 내용이 없는 채팅이 있습니다. 열면 빈 채팅으로 보이는 채팅입니다.\n\n${list}\n\n이 채팅들은 빈 채팅으로 보관됩니다. 이 캐릭터들도 비활성화할까요?`,
+  archiveSaveFailed: "최근 변경사항을 서버에 저장하지 못해, 변경사항을 지키기 위해 중단했습니다. 잠시 후 다시 시도하세요.",
+  rebaseSkippedArchived: (names: string) =>
+    `"${names}" 캐릭터가 다른 기기에서 비활성화되어 이 기기의 저장되지 않은 변경을 반영하지 못했습니다.`,
+  activateCharacterConfirm: (name: string) => `"${name}" 캐릭터가 비활성화되어 있습니다. 활성화할까요?`,
+  activateCharacterMissing: "보관된 캐릭터 데이터를 찾을 수 없어 활성화할 수 없습니다. 서버 로그와 스토리지 대시보드를 확인하세요.",
+  activateCharacterFailed: "활성화에 실패했습니다: ",
+  activateCharacterAlreadyActive: "서버에서 이 캐릭터가 이미 활성 상태입니다. 페이지를 새로고침하세요.",
+  activateCharacterRemoveStub: "이 캐릭터를 목록에서 제거할까요? (다른 데이터는 삭제되지 않습니다)",
+  deactivatedBadge: "비활성화",
   exportCharacter: "캐릭터 엑스포트",
   characterPackage: "캐릭터 패키지",
   characterPackageExport: "패키지 내보내기",
@@ -782,6 +829,7 @@ export const languageKorean = {
   streamingDisplayOptimizationStrong: "완료 후 일괄 적용",
   streamingDisplayOptimizationStrongDesc: "스트리밍 중엔 원문만 표시하고, 완료되면 스크립트를 한 번에 적용합니다",
   allowV2Plugin: "비권장 V2.0 플러그인 허용",
+  allowV21Plugin: "비권장 V2.1 플러그인 설치 허용",
   altGreet: "추가 첫 메시지",
   scripts: "스크립트",
   settings: "설정",
@@ -804,11 +852,17 @@ export const languageKorean = {
   botSettingsLegacyDesc: "최신 모델 업데이트가 지연되거나 새 기능이 적용되지 않을 수 있습니다. 최신화된 모델과 기능을 사용하려면 [모델 프리셋]을 이용하세요.",
   botSettingsPresetMovedDesc: "프리셋은 [프롬프트] 메뉴로 이전되었습니다.",
   botSettingsParamScopeDesc: "이 페이지의 파라미터는 [채팅 봇]에서 선택한 모델에만 적용됩니다. 모델 프리셋을 사용 중이라면 해당 프리셋 안에서 파라미터를 수정하세요.",
+  botSettingsCustomFlagsScopeDesc: "커스텀 플래그 설정은 레거시 모델에서만 동작합니다. 모델 프리셋에는 모델 프로필에 맞게 자동으로 적용됩니다.",
   currentThemePreset: "현재 테마 프리셋",
   currentPromptPreset: "현재 프롬프트 프리셋",
   presetDuplicate: "복제하기",
   presetExport: "내보내기",
   presetImport: "불러오기",
+  presetNew: "새 프리셋",
+  presetManage: "프리셋 관리",
+  moduleManage: "모듈 관리",
+  pluginImport: "플러그인 임포트",
+  pluginDevTools: "개발자 도구",
   presetDelete: "삭제하기",
   presetDuplicated: "프리셋을 복제했습니다",
   presetExported: "프리셋을 내보냈습니다",
@@ -896,6 +950,26 @@ export const languageKorean = {
   officialDiscord: "공식 디스코드",
   officialDiscordDesc: "리스AI에 대해 자유롭게 대화하세요.",
   persona: "페르소나",
+  personaSearch: "이름 또는 메모로 검색",
+  personaManage: "페르소나 관리",
+  memoryPresetDefault: "기본 프리셋",
+  memoryBindingLabel: "장기기억 바인딩",
+  memoryPresetOff: "사용 안 함",
+  memoryPresetInherit: "기본값",
+  memoryPresetSetDefault: "기본으로 설정",
+  memoryPresetCreate: "새 프리셋",
+  memoryPresetSearch: "프리셋 이름으로 검색",
+  memoryPresetMethod: "방식",
+  memoryPresetName: "프리셋 이름",
+  memoryPresetManage: "장기기억 관리",
+  memoryPresetLastOne: "프리셋은 최소 하나 있어야 합니다.",
+  memoryPresetBound: "장기기억 프리셋이 변경되었습니다.",
+  folderUncategorized: "미분류",
+  folderNew: "새 폴더",
+  folderMoveTo: "폴더로 이동",
+  folderDeleteKeepItems: "이 폴더를 삭제할까요? 폴더 안의 항목은 미분류로 이동합니다.",
+  moveUp: "위로",
+  moveDown: "아래로",
   icon: "아이콘",
   account: "계정",
   remove: "삭제",
@@ -1073,7 +1147,10 @@ export const languageKorean = {
   edit: "수정",
   enableGlobal: "글로벌 활성화",
   chatModulesInfo:
-    "모듈을 이 채팅 한정으로 활성화/비활성화합니다. 우클릭 또는 길게 눌러 캐릭터 한정으로 활성화/비활성화할 수 있습니다.",
+    "모듈을 이 채팅 또는 이 캐릭터 한정으로 활성화/비활성화합니다. 말풍선 버튼은 채팅, 사람 버튼은 캐릭터입니다. 지구본이 표시된 모듈은 전역으로 켜져 있어 모든 채팅에 적용되며, 설정 > 모듈에서 바꿀 수 있습니다.",
+  moduleScopeChat: "이 채팅에서 사용",
+  moduleScopeCharacter: "이 캐릭터에서 사용",
+  moduleScopeGlobal: "전역 활성화됨. 설정 > 모듈에서 변경",
   sideMenuRerollButton: "사이드 메뉴 리롤 버튼",
   persistentStorage: "영구 저장소",
   persistentStorageSuccess: "저장소가 영구적으로 설정되었습니다.",
@@ -1108,6 +1185,13 @@ export const languageKorean = {
     "현재 탭이 비활성화되었습니다. OK를 누르면 탭이 다시 활성화됩니다.",
   sessionHandoffReload:
     "다른 기기에서 사용되어 최신 상태로 새로고침했어요.",
+  sessionUnsavedTitle: "다른 곳에서 저장 권한을 가져갔어요",
+  sessionUnsavedDetail:
+    "이 탭의 저장은 멈췄고, 아직 서버에 저장되지 않은 편집이 있어요. 새로고침하면 그 편집은 사라지고 최신 상태를 불러옵니다. 먼저 미저장 편집을 JSON 파일로 내려받아 두면 필요한 내용을 직접 옮겨 적을 수 있어요.",
+  sessionUnsavedDownload: "미저장 편집 내려받기",
+  sessionUnsavedReload: "편집을 버리고 새로고침",
+  sessionUnsavedPaused: "이 탭의 저장은 멈춘 상태예요. 편집 내용을 옮긴 뒤 새로고침하세요.",
+  backupBrowserDownloadStarted: "브라우저 다운로드로 백업을 받기 시작했어요. 진행 상황과 완료는 브라우저의 다운로드 목록에서 확인하세요.",
   addCharacter: "캐릭터 추가",
   importFromRealm: "RisuRealm에서 고르기",
   importFromRealmDesc:
@@ -1135,7 +1219,7 @@ export const languageKorean = {
   list: "리스트",
   trash: "휴지통",
   trashDesc:
-    "삭제된 캐릭터는 휴지통에 보관됩니다. 복구하거나 영구 삭제할 수 있습니다. 3일 후에는 자동으로 영구 삭제됩니다.",
+    "휴지통의 캐릭터는 비활성화 상태로 서버에 보관되어 성능에 영향을 주지 않습니다. 자동으로 삭제되지 않으며, 언제든 복원하거나 영구 삭제할 수 있습니다.",
   shareExport: "공유/엑스포트",
   risupresetDesc:
     "Risupreset 포맷은 포맷을 공유하기 위한 PocketRisu 전용 포맷입니다.",
@@ -1536,6 +1620,10 @@ export const languageKorean = {
   modelPresetSetDefaultConfirm:
     "현재 모델 바인딩을 새 채팅 기본값으로 지정할까요?",
   modelPresetBindedSuccess: "모델 프리셋이 성공적으로 바인드되었습니다.",
+  maxContextCapInfo: "모델 프로필 한도: {} 토큰. 비워 두거나 이 값을 넘게 입력하면 이 한도까지만 사용합니다.",
+  maxContextCapExceeded: "입력값이 모델 프로필 한도를 넘어 {} 토큰까지만 사용됩니다. 그대로 쓰려면 아래 \"모델 한도 무시\"를 켜세요.",
+  maxContextIgnoreCap: "모델 한도 무시",
+  maxContextIgnoreCapHelp: "프로필에 적힌 컨텍스트 한도가 실제와 다를 때 켭니다. 위에 입력한 값을 그대로 쓰며, 실제 한도를 넘기면 서비스 쪽에서 에러가 납니다. 값을 비워 두면 효과가 없습니다.",
   streamingOverride: "응답 스트리밍",
   streamingOverrideHelp: "이 프리셋이 응답을 스트리밍할지 여부.",
   decoupledStreaming: "디커플드 스트리밍 (한 번에 출력)",
@@ -1778,8 +1866,17 @@ export const languageKorean = {
     "플러그인 {} 이(가) 채팅 내용을 교체할 권한을 요청합니다. 대화 조작에 사용될 수 있습니다. 허용하시겠습니까?",
   providerPermissionConsent:
     "플러그인 {} 이(가) Provider 접근 권한을 요청합니다. 무단 API 호출이 발생할 수 있습니다. 허용하시겠습니까?",
+  inlayPermissionConsent:
+    "플러그인 {}이(가) 인레이에 접근할 권한을 요청하고 있습니다. 인레이 내용을 읽거나 쓰거나 수정할 수 있습니다. 허용하시겠습니까?",
   sendChatConsent:
     "플러그인 {} 이(가) 사용자 대신 채팅 메시지를 전송할 권한을 요청합니다. AI 응답이 트리거됩니다. 허용하시겠습니까?",
+  pluginPermissionDenyGuide:
+    '플러그인 "{}"의 권한 요청을 거부했습니다. 거부한 권한은 다시 묻지 않습니다.\n\n실수로 거부했다면 [설정] > [플러그인]에서 해당 플러그인의 "권한 응답 초기화"로 되돌릴 수 있습니다.',
+  pluginFullStorageAccess: "다른 플러그인 데이터 전체 제공 (원본 RisuAI 호환)",
+  pluginFullStorageAccessDesc:
+    "이 플러그인이 DB를 읽을 때 모든 플러그인의 저장 데이터를 함께 넘깁니다. 현재 플러그인 저장소 {} 전체가 읽을 때마다 복사되므로, 다른 플러그인 데이터가 필요한 플러그인에만 켜세요.",
+  pluginFullStorageAccessLarge: "플러그인 저장소가 100 MB를 넘습니다. 자주 읽는 플러그인에 켜면 앱이 느려지거나 멈출 수 있습니다.",
+  pluginFullStorageAccessGuide: "자세히 보기",
   resetPluginPermission: "권한 응답 초기화",
   resetPluginPermissionConfirm:
     '플러그인 "{}"의 저장된 권한 응답(허용/거부 이력)을 모두 삭제하시겠습니까?\n\n다음에 플러그인이 권한을 요청할 때 다시 묻게 됩니다.',
@@ -1797,15 +1894,15 @@ export const languageKorean = {
   serverBackupSave: "서버에 백업 저장",
   serverBackupManage: "서버 백업 관리",
   serverBackupSaving: "서버에 백업 저장 중...",
-  serverBackupSaveSuccess: (filename: string, size: string) =>
-    `백업 저장 완료: ${filename} (${size})`,
+  pluginStorageV2PreloadFailed: "플러그인 저장소를 불러오지 못해 V2 플러그인을 실행하지 않았습니다. 새로고침하면 다시 시도합니다.",
+  serverBackupSaveSuccess: (filename: string, size: string, dir?: string) =>
+    `백업 저장 완료: ${filename} (${size})${dir ? ` — 저장 위치: ${dir}` : ''}`,
   serverBackupLoading: "백업 목록 불러오는 중...",
   serverBackupEmpty: "서버에 저장된 백업이 없습니다.",
   serverBackupRestore: "복원",
   serverBackupDownload: "다운로드",
   serverBackupDelete: "삭제",
   serverBackupRestoring: "서버 백업에서 복원 중...",
-  serverBackupDownloading: "백업 다운로드 중...",
   serverBackupDeleteConfirm: (filename: string) =>
     `"${filename}" 백업을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`,
   serverBackupDeleteSuccess: "백업이 삭제되었습니다.",
@@ -1846,6 +1943,14 @@ export const languageKorean = {
   togglePinToChat: "채팅에 토글 바인드",
   togglePinLabel: "토글 바인드",
   togglePinSaved: "토글이 바인드 되었습니다.",
+  toggleSaveAsDefaultButton: "기본값으로 저장",
+  toggleSetDefaultConfirm: "현재 토글 상태를 새 채팅의 기본값으로 저장할까요? 새로 만드는 채팅은 이 상태로 바인드된 채 시작합니다.",
+  toggleDefaultSaved: "토글 기본값으로 저장됨",
+  toggleDefaultSavedButton: "기본값 저장됨",
+  toggleDefaultManage: "새 채팅의 토글 기본값이 저장되어 있습니다.",
+  toggleDefaultOverwrite: "현재 상태로 덮어쓰기",
+  toggleDefaultClear: "기본값 해제",
+  toggleDefaultCleared: "토글 기본값이 해제되었습니다. 새 채팅은 바인딩 없이 시작합니다.",
   toggleSaveAsPreset: "토글 프리셋으로 저장",
   toggleLoadPreset: "토글 프리셋에서 불러오기",
   togglePinUpdate: "토글 저장",
@@ -1951,6 +2056,7 @@ export const languageKorean = {
   nanoGPTSelectFromList: "목록에서 선택",
   nanoGPTManualInput: "수동 입력",
   nanoGPTManualModelSelect: "수동 모델 선택",
+  nodeOnlyRestoreLastChat: "시작 시 마지막 채팅 열기",
   nodeOnlyScrollButtonType: "스크롤 버튼 타입",
   scrollButtonTypeFour: "4버튼",
   scrollButtonTypeTwo: "2버튼",
@@ -1987,6 +2093,11 @@ export const languageKorean = {
   httpInsecureWarningBody:
     "플러그인 등 일부 기능이 동작하지 않을 수 있습니다. 원격 접속 기능을 사용하면 HTTPS로 연결할 수 있습니다.",
   httpInsecureOpenRemoteAccess: "설정 열기",
+  transferSizeWarningTitle: "전송 데이터 용량이 권장 크기를 넘었습니다",
+  transferSizeWarningBody:
+    "현재 약 {{size}}로, 원격 접속 시 저장이 실패할 수 있습니다. 사용하지 않는 캐릭터를 비활성화하면 전송 데이터 용량이 줄어듭니다.",
+  transferSizeOpenCharacterManager: "캐릭터 관리",
+  transferSizeDismiss: "이번 세션에서 숨기기",
 
   // 시스템 페이지
   system: "시스템",
@@ -2029,6 +2140,7 @@ export const languageKorean = {
   pluginStorageRefresh: "새로고침",
   pluginStorageEmpty: "항목이 없습니다.",
   pluginStorageLoadError: "저장소를 불러올 수 없습니다.",
+  pluginStorageNotLoaded: "열면 로드",
   pluginStorageSave: "저장",
   pluginStorageFormatJson: "JSON 정렬",
   pluginStorageMetaType: "타입",
@@ -2059,7 +2171,7 @@ export const languageKorean = {
   // 리퀘스트 로그 / 사용량 (시스템 설정)
   requestLogsTab: "리퀘스트 로그",
   requestLogsDesc:
-    "프로바이더로 나간 요청의 본문·응답·소요 시간을 기록합니다. 기본 필터는 LLM 요청만 표시합니다.",
+    "프로바이더로 나간 요청의 본문·응답·소요 시간을 기록합니다.",
   requestLogsFilters: "필터",
   requestLogsFilterClear: "필터 초기화",
   requestLogsFilterActive: (count: number) =>
@@ -2178,6 +2290,10 @@ export const languageKorean = {
   storageRowKvDatabase: "database.bin (활성)",
   storageRowKvDatabaseDesc:
     "risuai.db 내부에 있는 단일 BLOB 행. 캐릭터 메타·채팅·설정이 통째로 들어갑니다. 2 GB 단일 BLOB 한계의 적용 대상.",
+  storageRowTransferSize: "전송 데이터 용량 (채팅 제외)",
+  storageRowTransferSizeLimit: "권장 {{limit}} 이하",
+  storageRowTransferSizeDesc:
+    "저장할 때 서버로 보내는 데이터의 크기입니다 (이 기기에서 마지막 저장 기준). 권장 크기를 넘으면 원격 접속 시 저장이 실패할 수 있으니, 사용하지 않는 캐릭터를 비활성화해 전송 데이터 용량을 줄이세요.",
   storageRowKvDbBackups: "DB 백업 (인프로세스)",
   storageRowKvDbBackupsDesc:
     "risuai.db 내부에 자동으로 보관되는 database.bin 스냅샷. 약 500 MB 한도로 자동 로테이션.",
@@ -2191,6 +2307,9 @@ export const languageKorean = {
     "캐릭터별 원격 동기화 캐시 (remotes/{chaId}.local.bin).",
   storageRowKvColdStorage: "콜드 스토리지",
   storageRowKvColdStorageDesc: "레거시·휴면 저장 영역. 보통 비어 있습니다.",
+  storageRowKvArchive: "비활성화 캐릭터",
+  storageRowKvArchiveDesc:
+    "비활성화한 캐릭터의 본문(채팅·에셋 목록 포함)과 색인. 활성화해도 자동으로 지워지지 않으며, 백업 내보내기에는 항상 완전한 캐릭터로 포함됩니다.",
   storageRowKvUncategorized: "기타 데이터",
   storageRowKvUncategorizedDesc:
     "위 분류에 들어가지 않는 키. 마이그레이션 잔여물이나 임시 항목 등이 여기 잡힙니다.",
@@ -2256,6 +2375,20 @@ export const languageKorean = {
   storageOrphanAutoCleanDesc:
     "앱을 열 때마다 고아 미디어를 자동으로 지웁니다. 기본은 꺼짐 — 아직 알려지지 않은 참조까지 지울 수 있어 수동 정리를 권장합니다.",
 
+  storageSaveMetrics: "저장 성능",
+  storageSaveMetricsHeader: (n: number) => `이 탭의 최근 ${n}회`,
+  storageSaveMetricsDesc:
+    "이 탭에서 최근 저장에 걸린 시간입니다. 저장이 느리거나 자주 실패하면 '진단 복사' 내용을 제보에 함께 붙여 주세요. 경로·이름·내용은 들어가지 않습니다.",
+  storageSaveMetricsEmpty: "아직 저장 기록이 없습니다. 편집하면 여기에 쌓입니다.",
+  storageSaveMetricsCounts: "저장 방식",
+  storageSaveMetricsCountsValue: (patch: number, full: number, retry: number, error: number) =>
+    `부분 ${patch} · 전체 ${full} · 재시도 ${retry} · 실패 ${error}`,
+  storageSaveMetricsTime: "저장 시간 (중앙값 / 상위 10%)",
+  storageSaveMetricsServer: "서버 처리 (중앙값)",
+  storageSaveMetricsQueue: "서버 대기열 대기 (중앙값)",
+  storageSaveMetricsPersist: "마지막 디스크 기록",
+  storageSaveMetricsCopy: "진단 복사",
+
   storageWalCleanup: "WAL 수동 정리",
   storageWalCleanupHeader: (walSize: number) =>
     `현재 WAL ${(walSize / 1024 / 1024).toFixed(1)} MB`,
@@ -2297,6 +2430,17 @@ export const languageKorean = {
   storageCharactersChat: "채팅",
   storageCharactersTrashed: "휴지통",
   storageCharactersGoTo: "이 캐릭터로 이동",
+  storageCharactersDeactivated: "비활성화",
+  storageArchiveOrphanHeader: (count: number, size: number) =>
+    `참조되지 않는 비활성화 데이터: ${count}개, ${(size / 1024 / 1024).toFixed(1)} MB`,
+  storageArchiveOrphanDesc:
+    "다시 활성화했거나 삭제·백업 복원으로 목록에서 빠진 캐릭터의 보관 데이터입니다. 스냅샷 복원에 대비해 자동으로 지우지 않습니다.",
+  storageArchiveOrphanPurge: "보관 데이터 정리",
+  storageArchiveOrphanConfirm: (count: number, size: number) =>
+    `참조되지 않는 비활성화 데이터 ${count}개(${(size / 1024 / 1024).toFixed(1)} MB)를 삭제할까요? 이 데이터를 가리키는 옛 스냅샷은 복원 후 해당 캐릭터를 열 수 없게 됩니다. 되돌릴 수 없습니다.`,
+  storageArchiveOrphanDone: (count: number, size: number) =>
+    `비활성화 데이터 ${count}개(${(size / 1024 / 1024).toFixed(1)} MB)를 정리했습니다.`,
+  storageCharactersDeactivatedMissing: "비활성화 · 데이터 없음",
   storageCharactersOrphan: (count: number, size: number) =>
     `고아 미디어 (어떤 캐릭터도 참조하지 않음): ${count}개, ${(size / 1024 / 1024).toFixed(1)} MB`,
   storageCharactersEmpty: "캐릭터 없음",
@@ -2434,6 +2578,24 @@ export const languageKorean = {
 
   relatedGithub: "GitHub",
   relatedGithubDesc: "Star를 눌러 프로젝트를 응원해주세요.",
+  support: "후원",
+  supportBanner: "PocketRisu를 후원해 주세요",
+  supportTitle: "PocketRisu 후원",
+  supportThanks: "후원해 주셔서 감사합니다",
+  supportButton: "Patreon에서 후원하기",
+  supportSetName: "후원자 이름 게시하기",
+  supportNotice: "후원은 전적으로 자유이며, 후원자 이름 게시 외에 추가 기능이나 혜택은 제공되지 않습니다.",
+  supportNoticeWarn: "아카라이브 AI 채팅 채널에서는 후원 관련 언급이 규정으로 금지되어 있으니 주의해 주세요.",
+  supportStatActive: "현재 정기 후원자",
+  supportStatLifetime: "누적 후원자",
+  supportCaptionActive: "매달 함께하고 있는 분들이에요",
+  supportCaptionLifetime: "지금까지 함께해 주신 모든 분들이에요",
+  supportPerMonth: "월",
+  supportEmpty: "첫 후원자가 되어주세요",
+  supportLoadFailed: "후원자 목록을 불러오지 못했습니다",
+  supportRetry: "다시 시도",
+  supportDisabled: "이 서버는 업데이트 확인이 꺼져 있어 후원자 목록을 표시하지 않습니다",
+  supportUpstream: "원본 RisuAI 후원하기",
   relatedFeedbackForm: "의견 보내기",
   relatedFeedbackFormDesc: "이슈 제보 및 의견을 보내주세요.",
   relatedContactEmail: "개발자 이메일",
@@ -2445,6 +2607,57 @@ export const languageKorean = {
   recentChatsTitle: "최근 대화",
   noRecentChatsDesc: "아직 대화한 봇이 없어요",
   hideRecentChats: "대화 목록 숨기기",
+  hideDeactivatedCharacters: "비활성화된 캐릭터 숨기기",
+  hiddenFromSidebarHint: "사이드바에서만 숨겨지며 데이터에는 영향이 없습니다. 비활성화와 달리 성능에도 영향이 없습니다.",
+
+  characterManager: "캐릭터 관리",
+  characterManagerHint: "사용하지 않는 캐릭터는 비활성화하거나 휴지통으로 보내 두면 로딩과 저장이 가벼워집니다. 데이터는 서버에 보관되며 언제든 다시 활성화하거나 복원할 수 있습니다.",
+  characterListSettings: "캐릭터 목록 설정",
+  sortSidebarOrder: "사이드바 순서",
+  sortRecentChats: "최근 대화순",
+  sortByName: "이름순",
+  sortByCreated: "추가일순",
+  sortByChatCount: "채팅 수",
+  hiddenBadge: "숨김",
+  hideFromSidebar: "사이드바에서 숨기기",
+  showInSidebar: "사이드바에 표시",
+  selectionCount: (n: number) => `${n}개 선택`,
+  clearSelection: "선택 해제",
+  folderSettings: "폴더 설정",
+  folderColor: "폴더 색상",
+  folderImage: "폴더 이미지",
+  selectImage: "이미지 선택",
+  resetImage: "기본 이미지로",
+  moveOutOfFolder: "폴더 밖으로",
+  noFolder: "폴더 밖",
+  restore: "복원",
+  deletePermanently: "영구 삭제",
+  deactivateSelectedConfirm: (n: number) => `선택한 ${n}개 캐릭터를 비활성화할까요?\n\n사용하지 않는 캐릭터를 비활성화하면 성능 개선에 도움이 됩니다. 데이터는 서버에 보관되며 언제든 다시 활성화할 수 있습니다.`,
+  trashSelectedConfirm: (n: number) => `선택한 ${n}개 캐릭터를 휴지통으로 보낼까요?`,
+  noCharactersFound: "캐릭터가 없습니다",
+  openCharacter: "열기",
+  activateCharacter: "캐릭터 활성화",
+  filterAll: "전체 보기",
+  filterHiddenOnly: "숨긴 캐릭터만",
+  filterArchivedOnly: "비활성화만",
+  folderIcon: "폴더 아이콘",
+  folderShowName: "아이콘에 폴더 이름 표시",
+  followGlobalSetting: "전역 설정 따름",
+  showLabel: "표시",
+  hideLabel: "숨김",
+  defaultLabel: "기본",
+  emptyTrash: "휴지통 비우기",
+  gridHideNames: "이름 숨기기",
+  moveToTrash: "휴지통으로 보내기",
+  moveToTrashConfirm: "휴지통으로 보낼까요? 캐릭터는 비활성화되어 서버에 보관되며, 휴지통에서 언제든 복원할 수 있습니다: ",
+  trashCharacterDone: "휴지통으로 보냈습니다.",
+  deleteCharacterFailed: "영구 삭제에 실패했습니다: ",
+  folderDisplayMode: "표시 방식",
+  folderModeIcon: "아이콘",
+  folderModeImage: "이미지",
+  folderModeName: "이름",
+  folderImageHint: "이미지를 선택하면 아이콘 자리에 표시됩니다.",
+  emptyTrashConfirm: (n: number) => `휴지통의 캐릭터 ${n}개를 영구 삭제할까요? 되돌릴 수 없습니다.`,
 
   showRequestStatus: "요청 상태 표시",
   requestStatus: {
@@ -2467,4 +2680,23 @@ export const languageKorean = {
     tokensPerSec: "tok/s",
     cacheHit: "캐시 적중 · {n} 토큰",
   },
+  settingActionAdd: "추가",
+  settingActionRename: "이름 변경",
+  settingActionView: "보기",
+  settingActionExport: "내보내기",
+  settingActionImport: "가져오기",
+  settingActionClear: "지우기",
+  showStatistics: "사용 통계",
+  showStatisticsDesc: "지금까지 누적된 사용 통계를 표로 보여줍니다.",
+  exportSettingsReport: "버그 제보용 설정 내보내기",
+  exportSettingsReportDesc: "API 키·캐릭터 등 개인 정보를 뺀 설정을 파일로 받고 클립보드에 복사합니다.",
+  banCharactersetDesc: "선택한 문자 집합이 섞인 응답을 받으면 자동으로 다시 생성합니다.",
+  inlayCompressAllDesc: "저장된 모든 인레이 이미지를 다시 압축해 저장 용량을 줄입니다.",
+  advTabPrompt: "프롬프트·생성",
+  advTabRequest: "요청·모델",
+  advTabAssets: "화면·에셋",
+  advTabDev: "개발·실험",
+  advSectionResponse: "응답 보정",
+  advSectionDevTools: "개발 도구",
+  advSectionExperimental: "실험적 기능",
 } satisfies DeepPartial<typeof import("./en").languageEnglish>;

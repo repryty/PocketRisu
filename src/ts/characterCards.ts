@@ -5,7 +5,7 @@ import { checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from 
 import { language } from "src/lang"
 import { v4 as uuidv4, v4 } from 'uuid';
 import { characterFormatUpdate } from "./characters"
-import { AppendableBuffer, BlankWriter, checkCharOrder, downloadFile, forageStorage, loadAsset, LocalWriter, readImage, saveAsset, VirtualWriter } from "./globalApi.svelte"
+import { AppendableBuffer, BlankWriter, checkCharOrder, downloadFile, forageStorage, loadAsset, loadAssetManifestItems, LocalWriter, readImage, saveAsset, VirtualWriter } from "./globalApi.svelte"
 import { compressImage, getImageType } from "./media"
 import { selectedCharID } from "./stores.svelte"
 import { openSettings, SettingsRoute } from "./routing"
@@ -582,6 +582,8 @@ function convertOffSpecCards(charaData:OldTavernChar|CharacterCardV2Risu, imgp:s
             note: '',
             name: 'Chat 1',
             localLore: [],
+            // An id from the start: the save path uploads only chats that have one.
+            id: v4(),
             ...newChatModelDefaults()
         }],
         chatPage: 0,
@@ -880,6 +882,8 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
             note: '',
             name: 'Chat 1',
             localLore: [],
+            // An id from the start: the save path uploads only chats that have one.
+            id: v4(),
             ...newChatModelDefaults()
         }],
         chatPage: 0,
@@ -935,6 +939,8 @@ async function importCharacterCardSpec<T extends boolean = false>(card:Character
         prebuiltAssetExclude: data?.extensions?.risuai?.prebuiltAssetExclude ?? [],
         prebuiltAssetStyle: data?.extensions?.risuai?.prebuiltAssetStyle ?? '',
         customModuleToggle: data?.extensions?.risuai?.toggles ?? '',
+        moduleNamespace: data?.extensions?.risuai?.moduleNamespace,
+        hideChatIcon: data?.extensions?.risuai?.hideChatIcon ?? false,
     }
 
     if(card.spec === 'chara_card_v3'){
@@ -983,7 +989,9 @@ function convertCharbook(arg:{
         }
 
         //extention migration
-        const extensions = book.extensions ?? {}
+        // Clone so the delete-based migration below can't strip fields from the
+        // source card object, which may be converted again (e.g. import retry).
+        const extensions = safeStructuredClone(book.extensions ?? {})
 
         if(extensions.useProbability && extensions.probability !== undefined && extensions.probability !== 100){
             content = `@@probability ${extensions.probability}\n` + content
@@ -1161,12 +1169,22 @@ function createBaseV2(char:character) {
 }
 
 
+/** Replace a lazy asset manifest with a plain array copy (export/conversion). */
+export async function hydrateCharacterAssets(char:character): Promise<character> {
+    if (Array.isArray(char.additionalAssets) || !char.additionalAssetManifest) return char
+    const hydrated = safeStructuredClone(char)
+    hydrated.additionalAssets = await loadAssetManifestItems(char.additionalAssetManifest) as [string, string, string][]
+    delete hydrated.additionalAssetManifest
+    return hydrated
+}
+
 export async function exportCharacterCard(char:character, type:'png'|'json'|'charx'|'charxJpeg' = 'png', arg:{
     password?:string
     writer?:LocalWriter|VirtualWriter,
     spec?:'v2'|'v3'
     onProgress?:(msg:string, pct:number) => void
 } = {}) {
+    char = await hydrateCharacterAssets(safeStructuredClone(char))
     let img = await readImage(char.image)
     const spec:'v2'|'v3' = arg.spec ?? 'v2' //backward compatibility
     const onProgress = arg.onProgress ?? ((msg:string, pct:number) => {
@@ -1556,6 +1574,8 @@ export function createBaseV3(char:character){
                     prebuiltAssetExclude: char.prebuiltAssetExclude ?? [],
                     prebuiltAssetStyle: char.prebuiltAssetStyle ?? '',
                     toggles: char.customModuleToggle ?? '',
+                    moduleNamespace: char.moduleNamespace,
+                    hideChatIcon: char.hideChatIcon ?? false
                 },
                 depth_prompt: char.depth_prompt
             },
@@ -1612,7 +1632,7 @@ export async function getRisuHub(arg:{
         arg.search += ' __shared'
         const stringArg = `search==${arg.search}&&page==${arg.page}&&nsfw==${arg.nsfw}&&sort==${arg.sort}&&web==other`
 
-        const da = await fetch(hubURL + '/realm/' + encodeURIComponent(stringArg), {
+        const da = await fetch(hubURL + '/realm/' + encodeURIComponent(stringArg) + "?cache=30", {
             headers: {
                 "x-risuai-info": appVer + ';node'
             }
@@ -1678,6 +1698,12 @@ export async function downloadRisuHub(id:string, arg:{
                 const index = db.characters.length-1
                 characterFormatUpdate(index);
                 selectedCharID.set(index);
+                try {
+                    const char = db.characters[index]
+                    if (char?.chaId) {
+                        localStorage.setItem('risu-last-active-character', char.chaId)
+                    }
+                } catch {}
             }   
             return
         }
@@ -1695,6 +1721,12 @@ export async function downloadRisuHub(id:string, arg:{
             const index = db.characters.length-1
             characterFormatUpdate(index);
             selectedCharID.set(index);
+            try {
+                const char = db.characters[index]
+                if (char?.chaId) {
+                    localStorage.setItem('risu-last-active-character', char.chaId)
+                }
+            } catch {}
             alertStore.set({
                 type: 'none',
                 msg: ''
@@ -1716,6 +1748,10 @@ export async function getHubResources(id:string) {
 }
 
 export function isCharacterHasAssets(char:character){
+    if(char.additionalAssetManifest && char.additionalAssetManifest.count > 0){
+        return true
+    }
+
     if(char.additionalAssets && char.additionalAssets.length > 0){
         return true
     }

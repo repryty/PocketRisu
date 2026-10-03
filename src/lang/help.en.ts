@@ -99,6 +99,7 @@ export const helpEn = {
             "Controls how the screen updates while streaming to reduce lag.",
         moduleModelBindingEnable: "Use the assigned model preset for requests a module sends itself (scripts and triggers). When off, those requests use the chat's own main/sub model settings.",
         allowV2Plugin: "Warning: This enables deprecated V2.0 plugin execution. V2.0 plugins bypass the V2.1 safety check and may be unsafe. Leave this disabled unless you explicitly trust the plugin and cannot migrate it to V3 yet.",
+        allowV21Plugin: "Warning: Installing new V2.1 plugins is blocked by default because the V2.1 API is deprecated and will stop working in a future version. Already-installed V2.1 plugins keep running. Enable only to install or update a V2.1 plugin you trust; the V2.1 safety check still applies.",
         imageCompression: "If enabled, it will compress images when exporting character. if animated images doesn't works, try disabling this option.",
         inlayImageLossless: "If enabled, inlay images will be saved as lossless PNG instead of compressed WebP. This preserves original quality but uses significantly more storage.",
         inlayImagePriority: "If enabled, inlays render as images first for faster loading. Video/audio inlays auto-switch after image load fails. Disable if you use many video/audio inlays.",
@@ -262,6 +263,14 @@ export const helpEn = {
             "Switches to the experimental HypaMemory V3 implementation. Enables rate limit settings and changes the query method.",
         hypaV3AlwaysToggleOn:
             "If enabled, the HypaMemory toggle is automatically activated when selecting a character.",
+        memoryPresetBinding:
+            "The long-term memory preset this chat uses.\n\n" +
+            "- **Default**: follows the default preset in Settings → Long Term Memory, and changes with it.\n" +
+            "- **Off**: messages beyond the context window are simply truncated and never reach the model.\n" +
+            "- **A preset**: this chat runs with that preset (summary model, ratios, ...) regardless of the default.\n\n" +
+            "Stored per chat, so other chats of the same character are not affected.",
+        memoryPresetDefault:
+            "The long-term memory preset used by chats left on 'Default'. With 'Off', memory only runs in chats that picked a preset themselves.",
         toggleHypaMemory:
             "Whether to use HypaMemory (long-term memory) for this chat.\n\n" +
             "- When on, past messages are automatically summarized into long-term memory once the context fills up, and relevant summaries are pulled back into later responses.\n" +
@@ -284,6 +293,7 @@ export const helpEn = {
         hypaV3QueryChatCount:
             "The number of recent chat messages used as the query for similarity search. " +
             "Higher values use more chat context to determine similarity.",
+        nodeOnlyRestoreLastChat: "Reopen the chat of the character you were last viewing when the app starts or reloads, so a mobile browser discarding the backgrounded tab does not send you back Home. If you left from Home, you stay on Home.",
         nodeOnlyScrollButtonType: "How the chat scroll buttons are shown. 4 Buttons adds jump-to-top and jump-to-bottom controls; 2 Buttons keeps only previous/next message navigation; Off hides them.",
         nodeOnlyServerSideRequests: "The server sends requests on your behalf and preserves the response. Generation continues even if the screen turns off or the connection drops, and the response is recovered automatically when you return. This only applies to model preset requests; turning it off restores the previous direct-request behavior.",
         confirmReroll: "Ask for confirmation before regenerating a message.",
@@ -314,6 +324,8 @@ export const helpEn = {
             "Automatically create a folder when branching a chat, grouping the original and branched chats together.",
         hamburgerButtonBottom: "Move the hamburger/menu button to the bottom of the sidebar.",
         hideLeftBarCollapseButton: "Hide the toggle button that collapses the left character grid bar on narrow screens (under 400px).",
+        hideRecentChats: "Hide the recent-chats list shown in the sidebar while no character is selected.",
+        hideDeactivatedCharacters: "Remove deactivated characters from the sidebar rail instead of showing them dimmed. They stay listed in the character manager and the storage dashboard.",
         loreBookDepth:
             "Number of previous messages to scan for lorebook activation keywords. `0` disables scanning; higher values can find older keywords but may activate unnecessary lore. (0-20)",
         loreBookToken:
@@ -401,8 +413,6 @@ export const helpEn = {
             "Show the current max-context limit as a visual line in the chat area. Messages above the line may not be sent to the model, so this helps show what the model can still remember.",
         hideRealm:
             "Start the Recently Uploaded section on the home screen collapsed. While collapsed it skips the RisuRealm fetch, speeding up initial load. You can expand it any time from the home screen.",
-        showFolderNameInIcon:
-            "Show folder names on folder icons in the character grid. Makes large folder collections easier to scan.",
         showRequestStatus:
             "Show a floating toast during model-preset requests with the live phase (connecting / thinking / responding / stalled), thinking and response token counts, and tokens-per-second. Memory-only; turning it off stops the display entirely.",
         customBackground: "A custom image used as the chat background.",

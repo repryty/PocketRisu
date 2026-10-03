@@ -53,6 +53,11 @@ export interface JobFetchOptions {
     /** Model id, persisted with the job so a recovered generation can be
      *  logged with the model it actually used. */
     model?: string
+    /** User-facing preset/model label stored for recovered message metadata. */
+    modelLabel?: string
+    inputTokens?: number
+    outputTokens?: number
+    maxContext?: number
     streaming: boolean
     /** 'main' = chat generation (recoverable at boot, per-chat guard).
      *  'aux' = pipeline side request (translate / memory / …) riding the job
@@ -103,6 +108,10 @@ export function makeJobFetch(opts: JobFetchOptions): typeof fetch {
                     generationId: opts.generationId,
                     adapterKind: opts.adapterKind,
                     model: opts.model,
+                    modelLabel: opts.modelLabel,
+                    inputTokens: opts.inputTokens,
+                    outputTokens: opts.outputTokens,
+                    maxContext: opts.maxContext,
                     kind: opts.jobKind ?? 'main',
                     streaming: opts.streaming,
                     timeoutMs: opts.timeoutMs,
@@ -114,14 +123,42 @@ export function makeJobFetch(opts: JobFetchOptions): typeof fetch {
             console.warn('[ModelJob] job creation failed, falling back to direct request path', err)
             return opts.fallbackFetch(input, init)
         }
+        let jobId: string
         if (created.status === 409) {
-            throw new ModelJobBusyError()
-        }
-        if (!created.ok) {
+            // The chat already has a running job. If it is THIS generation's
+            // own job (the previous attempt lost its stream before the
+            // upstream answered — a gateway 504 in front of a slow-first-byte
+            // model, or a killed tab — and the send pipeline retried), attach
+            // to it instead of failing: the journal replays from byte 0, so
+            // the retry resumes the generation in place. A job of another
+            // generation is a genuine conflict and must surface (issue #87).
+            let busy: { jobId?: string, generationId?: string } = {}
+            try { busy = await created.json() } catch { /* body optional */ }
+            if (!busy.jobId || busy.generationId !== opts.generationId) {
+                throw new ModelJobBusyError()
+            }
+            console.warn('[ModelJob] chat busy with this generation\'s own job, reattaching', busy.jobId)
+            jobId = busy.jobId
+        } else if (!created.ok) {
             console.warn('[ModelJob] job creation rejected (', created.status, '), falling back to direct request path')
             return opts.fallbackFetch(input, init)
+        } else {
+            try {
+                jobId = (await created.json()).jobId
+            } catch (err) {
+                // Aborted while the create response was read: the job runs,
+                // but its id never arrived. Find it by this generation's id.
+                if (signal?.aborted && opts.generationId) {
+                    void (async () => {
+                        const listed = await fetch('/api/model-jobs?active=1', { headers: await authHeader() })
+                        const { jobs } = await listed.json() as { jobs?: { id: string, chatId?: string, generationId?: string }[] }
+                        const own = jobs?.find((job) => job.generationId === opts.generationId && job.chatId === opts.realChatId)
+                        if (own) await fetch(`/api/model-jobs/${own.id}`, { method: 'DELETE', headers: await authHeader() })
+                    })().catch(() => {})
+                }
+                throw err
+            }
         }
-        const jobId: string = (await created.json()).jobId
 
         // Abort propagation: aborting the request DELETEs the job (server
         // aborts the upstream) and cancels the local stream fetch (same
@@ -132,15 +169,68 @@ export function makeJobFetch(opts: JobFetchOptions): typeof fetch {
             })().catch(() => {})
         }
         signal?.addEventListener('abort', abortJob, { once: true })
+        // An abort that landed while the create response was being read has
+        // already fired; the listener above would never run for it.
+        if (signal?.aborted) abortJob()
         const detach = () => signal?.removeEventListener('abort', abortJob)
 
         // 2. Attach to the journal stream (replay from byte 0 + live tail).
-        let streamRes: Response
-        try {
-            streamRes = await fetch(`/api/model-jobs/${jobId}/stream`, { headers: await authHeader(), signal })
-        } catch (err) {
+        //
+        // Retried with the same backoff policy as mid-stream reattach: the
+        // dominant mobile pattern is "send, then background the tab" — the tab
+        // freezes with this fetch in flight and it rejects the moment the tab
+        // resumes, while the radio may take several more seconds to come back.
+        // The job is already running server-side and the journal replays from
+        // byte 0 on every attach, so attaching late loses nothing. Only fetch
+        // REJECTIONS (network-level) and responses that did not come from our
+        // server retry — a reverse proxy in front of the server answers with
+        // its own 502/504 when the pre-header wait (a thinking model's first
+        // byte) outlasts its idle timeout, and that is a transport failure,
+        // not the server's answer (issue #87). Our own stream responses always
+        // carry x-model-job-id, so a response without it is a middlebox; 404
+        // stays definitive (the job is gone). On exhaustion this is a lost
+        // connection, not a lost generation — surface the same
+        // ModelJobConnectionLostError the mid-stream path uses (recovery picks
+        // the job up at the next return), never the raw TypeError.
+        const baseDelay = opts.reconnectBaseDelayMs ?? 1000
+        const abortError = () => new DOMException('The operation was aborted.', 'AbortError')
+        const sleepAbortable = (ms: number) => new Promise<void>((resolve, reject) => {
+            const cleanup = () => {
+                clearTimeout(timer)
+                signal?.removeEventListener('abort', onAbort)
+            }
+            const onAbort = () => { cleanup(); reject(abortError()) }
+            const timer = setTimeout(() => { cleanup(); resolve() }, ms)
+            if (signal?.aborted) { onAbort(); return }
+            signal?.addEventListener('abort', onAbort)
+        })
+
+        let streamRes: Response | null = null
+        for (let attempt = 0; attempt < RECONNECT_MAX_ATTEMPTS; attempt++) {
+            try {
+                if (attempt > 0) {
+                    await sleepAbortable(baseDelay * 2 ** (attempt - 1))
+                }
+                const res = await fetch(`/api/model-jobs/${jobId}/stream`, { headers: await authHeader(), signal })
+                // Gateway-shaped statuses only (502/503/504, Cloudflare 52x,
+                // 408): a headerless 4xx/500 can also be the server's own
+                // auth/handler error and must stay definitive.
+                if (!res.headers.has('x-model-job-id') && (res.status === 408 || res.status >= 502)) {
+                    console.warn('[ModelJob] stream attach answered by an intermediary (', res.status, '), retrying')
+                    continue
+                }
+                streamRes = res
+                break
+            } catch (err) {
+                if (signal?.aborted) {
+                    detach()
+                    throw err
+                }
+            }
+        }
+        if (streamRes === null) {
             detach()
-            throw err
+            throw new ModelJobConnectionLostError()
         }
         const upstreamStatus = streamRes.headers.get('x-model-job-upstream-status')
         if (!streamRes.ok || upstreamStatus === null || !streamRes.body) {
@@ -169,19 +259,6 @@ export function makeJobFetch(opts: JobFetchOptions): typeof fetch {
         let skipRemaining = 0
         let progressSinceAttach = true // first attach counts as progress
         let noProgressCycles = 0
-        const baseDelay = opts.reconnectBaseDelayMs ?? 1000
-
-        const abortError = () => new DOMException('The operation was aborted.', 'AbortError')
-        const sleepAbortable = (ms: number) => new Promise<void>((resolve, reject) => {
-            const cleanup = () => {
-                clearTimeout(timer)
-                signal?.removeEventListener('abort', onAbort)
-            }
-            const onAbort = () => { cleanup(); reject(abortError()) }
-            const timer = setTimeout(() => { cleanup(); resolve() }, ms)
-            if (signal?.aborted) { onAbort(); return }
-            signal?.addEventListener('abort', onAbort)
-        })
 
         // Re-attach to the journal stream. True = a fresh reader is installed
         // (replay from 0; skip what was already delivered). False = job gone

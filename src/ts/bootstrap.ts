@@ -1,3 +1,4 @@
+import { migrateLegacyTrash } from "./characterArchive";
 import { changeFullscreen, checkNullish } from "./util"
 import { installDynamicViewportHeight } from "./viewportHeight"
 import { v4 as uuidv4 } from 'uuid';
@@ -6,6 +7,7 @@ import { setDatabase, defaultSdDataFunc, getDatabase, changeToThemePreset } from
 import { chatDraftKey, sweepOrphanDrafts } from "./storage/chatDraft";
 import { checkRisuUpdate } from "./update";
 import { MobileGUI, botMakerMode, selectedCharID, loadedStore, DBState, LoadingStatusState, bootBackupPromptStore } from "./stores.svelte";
+import { recordDbTransferSize } from "./transferSize";
 import { loadPlugins } from "./plugins/plugins.svelte";
 import { alertError, alertMd, alertTOS, waitAlert, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
@@ -16,7 +18,7 @@ import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
 import { applyEarlyLanguage, changeLanguage, language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
-import { updateLorebooks } from "./characters";
+import { changeChar, updateLorebooks } from "./characters";
 import { initMobileGesture } from "./hotkey";
 import { moduleUpdate } from "./process/modules";
 import {
@@ -24,9 +26,6 @@ import {
     saveDb,
     setPatchSyncBaseline,
     getDbBackups,
-    getUncleanables,
-    extractAssetRefs,
-    getBasename,
     checkCharOrder
 } from "./globalApi.svelte";
 import { registerModelDynamic } from "./model/modellist";
@@ -56,9 +55,14 @@ export async function loadData() {
                 }
                 try {
                     const decoded = await decodeRisuSave(gotStorage)
-                    setPatchSyncBaseline(safeStructuredClone(decoded))
-                    console.log(decoded)
+                    // setPatchSyncBaseline owns its defensive clone. Cloning at
+                    // both call sites briefly held two full DB copies at boot.
+                    setPatchSyncBaseline(decoded)
                     setDatabase(decoded)
+                    // /api/read serves the chat-stripped blob — the same shape a
+                    // full write sends — so its length is a first estimate of the
+                    // transfer size until the first save measures the real payload.
+                    if (!createdFreshDatabase) recordDbTransferSize(gotStorage.byteLength, 'boot')
                 } catch (error) {
                     console.error(error)
                     const backups = await getDbBackups()
@@ -68,7 +72,7 @@ export async function loadData() {
                             LoadingStatusState.text = `Reading Backup File ${backup}...`
                             const backupData: Uint8Array = await forageStorage.getItem(`database/dbbackup-${backup}.bin`) as unknown as Uint8Array
                             const backupDecoded = await decodeRisuSave(backupData)
-                            setPatchSyncBaseline(safeStructuredClone(backupDecoded))
+                            setPatchSyncBaseline(backupDecoded)
                             setDatabase(backupDecoded)
                             backupLoaded = true
                             break
@@ -170,7 +174,32 @@ export async function loadData() {
                 console.warn('[bootstrap] boot backup reminder failed:', err)
             }
             loadedStore.set(true)
+
             selectedCharID.set(-1)
+
+            // Keep PocketRisu's normal clean boot (-1), then restore through
+            // the canonical changeChar path so lazy chat hydration, toggles,
+            // and chat UI initialization still run normally.
+            try {
+                const lastChaId = db.nodeOnlyRestoreLastChat
+                    ? localStorage.getItem('risu-last-active-character')
+                    : null
+                const restoreIndex = lastChaId
+                    ? DBState.db.characters.findIndex((char) => char?.chaId === lastChaId)
+                    : -1
+
+                if (restoreIndex >= 0) {
+                    setTimeout(() => {
+                        try {
+                            changeChar(restoreIndex)
+
+                        } catch (error) {
+                            console.warn('[MobileResume] restore failed:', error)
+                        }
+                    }, 100)
+                }
+            } catch { /* best effort only */ }
+
             startObserveDom()
             assignIds()
             registerModelDynamic()
@@ -480,16 +509,15 @@ async function checkNewFormat(): Promise<void> {
     if (db.mainPrompt === oldJailbreak) {
         db.mainPrompt = defaultJailbreak;
     }
-    for (let i = 0; i < db.characters.length; i++) {
-        const trashTime = db.characters[i].trashTime;
-        const targetTrashTime = trashTime ? trashTime + 1000 * 60 * 60 * 24 * 3 : 0;
-        if (trashTime && targetTrashTime < Date.now()) {
-            db.characters.splice(i, 1);
-            i--;
-        }
-    }
+    // The trash no longer expires: trashed characters are deactivated (kept
+    // server-side) and stay until the user deletes them. Legacy live trash
+    // (`trashTime` on a character) is migrated to that shape shortly after
+    // boot, best effort — see characterArchive.migrateLegacyTrash.
     setDatabase(db);
     checkCharOrder();
+    if (db.characters.some((c) => c?.trashTime)) {
+        setTimeout(() => { void migrateLegacyTrash() }, 5000);
+    }
 
     // One-pass cleanup of composer drafts whose chat no longer exists (deleted
     // chats/characters, trash purge, plugin/script removals). Replaces per-delete
@@ -501,6 +529,11 @@ async function checkNewFormat(): Promise<void> {
             if (chat?.id) validDraftKeys.add(chatDraftKey(char.chaId, chat.id));
         }
     }
+    // Deactivated characters keep their chats server-side; their drafts stay too.
+    for (const stub of db.nodeOnlyArchivedCharacters ?? []) {
+        if (!stub?.chaId) continue;
+        for (const id of stub.chatIds ?? []) validDraftKeys.add(chatDraftKey(stub.chaId, id));
+    }
     void sweepOrphanDrafts(validDraftKeys);
 }
 
@@ -509,74 +542,25 @@ async function checkNewFormat(): Promise<void> {
  */
 async function cleanChunks() {
     const db = getDatabase()
-    // Orphan assets/* are only swept when the user opted in — the walker below
-    // has no way to know about a reference field it was never taught, and the
-    // deletion is permanent. Opted out, the storage dashboard offers the same
-    // sweep on demand. remotes/* are regenerable caches and always swept.
-    const cleanAssets = db.nodeOnlyAutoCleanAssets === true
-    const uncleanable = new Set(getUncleanables(db))
-    const indexes = await forageStorage.keys()
-    // V3 plugin persistent storage lives outside the DB (cache/plugin-storage/*)
-    // and may hold saveAsset paths — treat anything it references as in use.
-    if (cleanAssets) {
-        for (const key of indexes) {
-            if (!key.startsWith('cache/plugin-storage/')) continue
-            try {
-                const payload = await forageStorage.getItem(key)
-                if (!payload) continue
-                const text = new TextDecoder().decode(payload)
-                for (const ref of extractAssetRefs(text)) {
-                    uncleanable.add(getBasename(ref))
-                }
-            } catch { /* unreadable entry — skip */ }
-        }
+    const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'risu-auth': await forageStorage.createAuth(),
     }
-    const allKeys = new Set(indexes)
-    const characterIds = new Set<string>(
-        db.characters.map((v) => v.chaId)
-    )
-    for (const asset of indexes) {
-        if (asset.endsWith('.meta')) {
-            continue
-        }
-        else if (asset.startsWith('assets/')) {
-            if(!cleanAssets) {
-                continue
-            }
-            const n = getBasename(asset)
-            if(!uncleanable.has(n)) {
-                await forageStorage.removeItem(asset)
-            }
-        }
-        else if (asset.startsWith('remotes/')) {
-            const name = getBasename(asset).slice(0, -10) //remove .local.bin
-            const exists = characterIds.has(name)
-            if(!exists){
-                let okayToDelete = false
-                try {
-                    const metaPath = asset + '.meta'
-                    const metaExists = allKeys.has(metaPath)
-                    if (metaExists) {
-                        const metaData: Uint8Array = await forageStorage.getItem(metaPath) as unknown as Uint8Array
-                        const metaJson = JSON.parse(new TextDecoder().decode(metaData))
-                        const lastUsed = metaJson.lastUsed as number
-                        if(Date.now() - lastUsed > 1000 * 60 * 60 * 24 * 7) { //not used for 7 days
-                            okayToDelete = true
-                        }
-                    }
-                    else{
-                        //write meta for next time
-                        const metaJson = {
-                            lastUsed: Date.now()
-                        }
-                        await forageStorage.setItem(metaPath, new TextEncoder().encode(JSON.stringify(metaJson)))
-                    }
-                } catch (error) {}
-                if (okayToDelete) {
-                    await forageStorage.removeItem(asset)
-                }
-            }
-        }
+    const sessionId = await forageStorage.getSessionId()
+    if (sessionId) headers['x-session-id'] = sessionId
+
+    const response = await fetch('/api/db/assets/auto-sweep', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ assets: db.nodeOnlyAutoCleanAssets === true }),
+    })
+    if (!response.ok) {
+        let message = `auto-sweep failed: ${response.status}`
+        try {
+            const body = await response.json()
+            if (body?.error) message += ` ${body.error}`
+        } catch { /* non-json error body */ }
+        throw new Error(message)
     }
 }
 

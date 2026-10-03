@@ -1,7 +1,7 @@
 {
   "name": "pocketrisu-signal",
   "private": true,
-  "version": "1.10.0",
+  "version": "1.13.0",
   "packageManager": "pnpm@10.34.1",
   "engines": {
     "node": ">=22.12.0"
@@ -76,7 +76,7 @@
     "sucrase": "^3.35.1",
     "sv": "^0.11.0",
     "svelte-awesome-color-picker": "^4.1.0",
-    "svelte-sonner": "^1.1.0",
+    "svelte-sonner": "^1.2.1",
     "tailwind-merge": "^3.5.0",
     "three": "^0.154.0",
     "tippy.js": "^6.3.7",
@@ -112,7 +112,7 @@
     "internal-ip": "^7.0.0",
     "postcss": "^8.5.6",
     "source-map": "^0.7.6",
-    "svelte": "^5.55.1",
+    "svelte": "^5.56.8",
     "svelte-check": "^4.3.5",
     "tailwindcss": "^4.2.2",
     "tslib": "^2.8.1",
