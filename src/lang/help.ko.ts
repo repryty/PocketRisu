@@ -7,6 +7,7 @@
  */
 
 export const helpKo = {
+        "regexOptimization": "검토를 마친 정확히 일치하는 정규식 패턴만 더 빠른 형태로 자동 변환합니다. 모든 정규식을 입력한 그대로 실행하려면 끄세요.",
         "model": "채팅의 메인 LLM 모델입니다. 모든 응답 생성에 사용됩니다.\n\n현재 메인 모델이 OpenAI/Claude/Gemini/오픈소스인지에 따라 아래 표시되는 API 키, URL, 파라미터 영역이 바뀝니다.",
         "submodel": "보조 모델은 메인 응답이 아닌 부가 작업(감정 이미지 분석, 자동 응답 제안, 번역, 요약 등)에 사용됩니다. 메인 모델보다 가볍고 저렴한 모델을 선택하면 비용 절감이 큽니다.",
         "oaiapikey": "OpenAI용 API 키입니다. https://platform.openai.com/account/api-keys에서 구하실 수 있습니다.",

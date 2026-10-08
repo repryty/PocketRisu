@@ -11,6 +11,7 @@
  */
 
 export const helpEn = {
+        regexOptimization: "Replace only reviewed, exactly recognized regex patterns with faster equivalents. Turn this off to run every regex exactly as entered.",
         model: "Model option is a main model used in chat.",
         submodel: "Auxiliary Model is a model that used in analyzing emotion images and auto suggestions and etc. gpt3.5 is recommended.",
         oaiapikey: "API key for OpenAI. you can get it in https://platform.openai.com/account/api-keys",

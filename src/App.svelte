@@ -37,7 +37,6 @@
     import SupportDialog from './lib/Others/SupportDialog.svelte';
     import BootBackupPrompt from './lib/Others/BootBackupPrompt.svelte';
     import PopupList from './lib/UI/PopupList.svelte';
-    import LoadingOverlay from './lib/Others/LoadingOverlay.svelte';
     import Toaster from './lib/UI/GUI/Toaster.svelte';
     import RequestStatusToaster from './lib/UI/GUI/RequestStatusToaster.svelte';
     import sendSound from './etc/send.mp3'
@@ -261,7 +260,6 @@
         <HypaV3Progress />
     {/if}
     <PluginAlertModal />
-    <LoadingOverlay />
     <UpdatePopup />
     <SupportDialog />
     <BootBackupPrompt />

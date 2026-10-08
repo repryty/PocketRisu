@@ -1,7 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
     import { DBState, popUpEditorStore } from '../../ts/stores.svelte';
-    import type MonacoEditorType from './MonacoEditor.svelte';
     import { language } from 'src/lang';
     import { risuChatParser } from "src/ts/parser/parser.svelte";
     import { tokenize } from 'src/ts/tokenizer';
@@ -11,7 +9,6 @@
     let languageMode = $state(popUpEditorStore.language || 'markdown');
     let previewing = $state(false);
     let tokens = $state(0);
-    let MonacoComponent: (typeof MonacoEditorType)|null = $state(null)
     let showToggles = $state(false)
 
     let chatParserValue = $derived.by(() => {
@@ -38,11 +35,6 @@
         })
     })
 
-    onMount(() => {
-        import('./MonacoEditor.svelte').then((module) => {
-            MonacoComponent = module.default;
-        });
-    });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -57,7 +49,7 @@
     >
          <!-- Header Toolbar -->
          <div class="flex items-center justify-between">
-            <h2 class="text-xl font-bold">Popup Editor</h2>
+            <h2 class="text-xl font-bold">{language.hotkeyDesc.popupEditor}</h2>
             <div class="flex items-center gap-2">
                 {#if ['markdown', 'cbs'].includes(languageMode)}
                     {#if !previewing}
@@ -86,7 +78,7 @@
                 </button>
             </div>
         </div>
-        <div class="flex-1 rounded-md overflow-hidden border border-darkborderc">
+        <div class="flex-1 min-h-0 rounded-md overflow-hidden border border-darkborderc">
             {#if previewing}
                 <div class="h-full w-full flex">
                     <div class="flex-1 flex flex-col gap-4 overflow-hidden">
@@ -112,9 +104,12 @@
                     {/if}
                 </div>
             {:else}
-                {#if MonacoComponent}
-                    <MonacoComponent bind:value={popUpEditorStore.value} language={languageMode} />
-                {/if}
+                <textarea
+                    class="block w-full h-full resize-none overflow-y-auto bg-bgcolor p-4 text-textcolor focus:outline-hidden"
+                    aria-label={language.hotkeyDesc.popupEditor}
+                    spellcheck={false}
+                    bind:value={popUpEditorStore.value}
+                ></textarea>
             {/if}
         </div>
     </div>

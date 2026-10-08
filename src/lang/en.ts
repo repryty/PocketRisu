@@ -801,6 +801,7 @@ export const languageEnglish = {
     charLoreBook: "Character Lorebook",
     globalLoreBook: "Global Lorebook",
     globalRegexScript: "Global Regex",
+    regexOptimization: "Automatically Optimize Known Regexes",
     accessibility: "Accessibility",
     sendWithEnter: "Send with Enter Key",
     sendKeyPC: "Send Key (PC)",

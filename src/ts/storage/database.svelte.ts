@@ -411,6 +411,7 @@ export function setDatabase(data:Database){
         data.loreBookPage = 0
     }
     data.globalscript ??= []
+    data.regexOptimization ??= true
     data.sendWithEnter ??= true
     data.sendKeyPC ??= 'enter'
     data.sendKeyMobile ??= 'ctrl-enter'
@@ -1196,6 +1197,7 @@ export interface Database{
         model:string
     }
     globalscript: customscript[],
+    regexOptimization?: boolean
     sendWithEnter:boolean
     /** Desktop send-key mode. 'enter': Enter sends (Shift+Enter newline);
      * 'ctrl-enter'/'shift-enter': that combo sends (Enter newline);

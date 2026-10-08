@@ -339,7 +339,7 @@
         autocompleteContents = []
     }
 
-    // Open the Monaco popup editor for this field, mirroring the contextmenu/hotkey path.
+    // Open the popup editor for this field, mirroring the contextmenu/hotkey path.
     const openPopupEditor = () => {
         popUpEditorStore.value = value
         popUpEditorStore.mode = 'default'

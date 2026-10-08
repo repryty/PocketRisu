@@ -15,6 +15,7 @@ import { runTrigger } from "./triggers";
 import type { RenderContext } from './renderContext';
 import { safeStructuredClone } from '../polyfill';
 import { cachedRegexReplace } from './regexReplaceCache';
+import { optimizeRegexSource } from './regexOptimizer';
 
 const dreg = /{{data}}/g
 const randomness = /\|\|\|/g
@@ -188,7 +189,7 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
         data = displayResult?.displayData ?? data
     }
 
-    const hash = generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, scriptContext)
+    const hash = `${db.regexOptimization === false ? 'regex-opt-off' : 'regex-opt-on'}|${generateScriptCacheKey(scripts, data, mode, chatID, cbsConditions, scriptContext)}`
     const cached = getScriptCache(hash)
     if(cached !== undefined){
         return {data: cached, emoChanged: false}
@@ -234,7 +235,10 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
                 input = parseForRender(input)
             }
 
-            const reg = new RegExp(input, flag)
+            const reg = new RegExp(
+                optimizeRegexSource(input, flag, db.regexOptimization !== false),
+                flag,
+            )
             if(outScript.startsWith('@@') || pscript.actions.length > 0){
                 if(reg.test(data)){
                     if(outScript.startsWith('@@emo ')){

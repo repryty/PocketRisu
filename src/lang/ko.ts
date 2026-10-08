@@ -885,6 +885,7 @@ export const languageKorean = {
   charLoreBook: "캐릭터 로어북",
   globalLoreBook: "글로벌 로어북",
   globalRegexScript: "글로벌 정규식",
+  regexOptimization: "알려진 정규식 자동 최적화",
   accessibility: "접근성",
   sendWithEnter:
     "엔터키로 메세지 보내기(체크 해제시 Shift + Enter가 메세지 전송으로 변경.)",

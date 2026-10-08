@@ -7,8 +7,12 @@
     import { DBState } from 'src/ts/stores.svelte';
     import { exportRegex, importRegex } from "src/ts/process/scripts";
     import RegexList from "src/lib/SideBars/Scripts/RegexList.svelte";
+    import Check from "src/lib/UI/GUI/CheckInput.svelte";
 </script>
 <SettingPage title={language.globalRegexScript}>
+<Check bind:check={DBState.db.regexOptimization} name={language.regexOptimization} className="mb-4">
+    <Help key="regexOptimization" />
+</Check>
 <RegexList bind:value={DBState.db.globalscript} />
 <div class="text-textcolor2 mt-2 flex gap-2">
     <button class="font-medium cursor-pointer hover:text-primary" onclick={() => {
