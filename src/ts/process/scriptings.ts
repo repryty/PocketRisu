@@ -118,7 +118,7 @@ export async function runScripted(code:string, arg:{
                 console.log('Creating new Lua engine for mode:', engineMode)
                 ScriptingEngineState.engine?.global.close()
                 ScriptingEngineState.code = code
-                ScriptingEngineState.engine = await luaFactory.createEngine({injectObjects: true})
+                ScriptingEngineState.engine = await luaFactory.createEngine({injectObjects: true, enableProxy: false})
                 const luaEngine = ScriptingEngineState.engine
                 const editListeners = new Set<string>()
                 ScriptingEngineState.editListeners = editListeners
