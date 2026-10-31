@@ -319,6 +319,8 @@ export const helpEn = {
         bulkEnabling: "Show buttons in the lorebook editor for enabling or disabling multiple entries at once.",
         showTranslationLoading: "Show a loading indicator while message translation is in progress.",
         autoScrollToNewMessage: "Automatically scroll to a newly arrived message.",
+        streamingScrollMode: "While a reply streams and you are at the bottom: keep following the newest text, or stop once the reply's first line reaches the top of the screen so you can read from the start. Scrolled up, the view never moves.",
+        streamingCursor: "Show a blinking cursor at the end of a reply while it is streaming.",
         alwaysScrollToNewMessage: "Always scroll down when a new message arrives, even if you have manually scrolled upward.",
         newMessageButtonStyle: "Choose where and how the \"new message\" button appears.",
         createFolderOnBranch:

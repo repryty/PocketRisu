@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { character, Message, StreamingDisplayOptimizationMode } from 'src/ts/storage/database.svelte';
-    import { mount, onDestroy, unmount } from 'svelte';
+    import { mount, onDestroy, onMount, unmount } from 'svelte';
     import Chat from './Chat.svelte';
     import { getCharImage } from 'src/ts/characters';
     import { createSimpleCharacter, DBState, selectedCharID, ReloadChatPointer } from 'src/ts/stores.svelte';
@@ -59,6 +59,7 @@
         }) => void
     }
     let mountInstances: Map<number, ChatInstance> = new Map();
+    let mountedElements: Map<number, HTMLElement> = new Map();
 
     //Non-cryptographic hash function to generate a unique hash for each message
     function hashCode(str:string):number {
@@ -123,6 +124,17 @@
             lastRealCharIdx = lastNonDisabledIdx;
         }
 
+        const streamingIndex = currentChat?.isStreaming ? messages.length - 1 : -1
+        const showStreamingCursor = DBState.db.streamingCursor !== false
+
+        // Containers by message index, so a remount (edited message) can keep
+        // the old height until the new body has rendered.
+        const previousByIndex = new Map<number, HTMLElement>()
+        for(const el of mountedElements.values()){
+            const index = Number(el.dataset.chatIndex)
+            if(Number.isFinite(index)) previousByIndex.set(index, el)
+        }
+
         if(chatFoldedStateMessageIndex.index !== -1){
             loadStart = chatFoldedStateMessageIndex.index
             loadEnd = Math.max(0, chatFoldedStateMessageIndex.index - loadPages)
@@ -141,10 +153,23 @@
             let hashd = hashMessageData + (message.chatId ?? '') + i.toString() + messageLargePortrait.toString() + message.disabled?.toString() + reloadPointer.toString() + (message.swipeId ?? 0).toString() + (message.swipes?.length ?? 0).toString();
             const currentHash = hashCode(hashd);
             currentHashes.add(currentHash);
+            const isStreamingMessage = showStreamingCursor && i === streamingIndex && message.role === 'char';
             if(!hashes.has(currentHash)){
                 const b = document.createElement('div');
                 b.setAttribute('x-hashed', currentHash.toString());
+                b.dataset.chatIndex = i.toString();
                 b.classList.add('chat-message-container');
+                b.classList.toggle('risu-streaming', isStreamingMessage);
+                const replaced = previousByIndex.get(i);
+                if(replaced && replaced.isConnected){
+                    // The new body parses asynchronously and starts empty; holding the
+                    // old height avoids a collapse that would shift everything around it.
+                    const h = replaced.offsetHeight;
+                    if(h > 0){
+                        b.style.minHeight = `${h}px`;
+                        holdMinHeight(b);
+                    }
+                }
                 const inst = mount(Chat, {
                     target: b,
                     props: {
@@ -170,6 +195,7 @@
 
                 })
                 mountInstances.set(currentHash, inst);
+                mountedElements.set(currentHash, b);
                 const nextElement = nextHash === 0 ? null : chatBody.querySelector(`[x-hashed="${nextHash}"]`);
                 if(nextElement){
                     chatBody.insertBefore(b, nextElement?.nextSibling);
@@ -179,6 +205,8 @@
                 }
             }
             else{
+                const el = mountedElements.get(currentHash)
+                el?.classList.toggle('risu-streaming', isStreamingMessage)
                 const inst = mountInstances.get(currentHash)
                 inst?.updateStreamingDisplay?.({
                     isOptimizedStreamingMessage: activeStreamingMessage,
@@ -201,6 +229,7 @@
                 unmount(inst);
                 mountInstances.delete(hash);
             }
+            mountedElements.delete(hash);
             const element = chatBody.querySelector(`[x-hashed="${hash}"]`);
             if(element){
                 chatBody.removeChild(element);
@@ -213,6 +242,7 @@
     onDestroy(() => {
         console.log('Unmounting Chats');
         hashes.clear();
+        mountedElements.clear();
         mountInstances.forEach((inst) => {
             unmount(inst);
         });
@@ -243,6 +273,146 @@
         scrollLatestIntoChatScreen();
     }
 
+    function holdMinHeight(el: HTMLElement) {
+        setTimeout(() => {
+            el.style.minHeight = '';
+        }, 400);
+    }
+
+    // ---- Scroll anchoring ------------------------------------------------
+    // The scroller is flex-col-reverse, so its offset is kept relative to the
+    // bottom: when a message below the viewport grows (streaming), shrinks or
+    // is remounted (edit), the text being read slides away. Native
+    // overflow-anchor is unreliable here (and absent on iOS Safari), so the
+    // top-most visible message is anchored by index and its on-screen
+    // position restored after every layout change. At the very bottom the
+    // col-reverse behavior (follow the newest text) is kept.
+    const ANCHOR_TOP_MARGIN = 8;
+    let scroller: HTMLElement | null = null;
+    let anchor: { index: number, offset: number } | null = null;
+    let pinnedToBottom = true;
+    let touching = false;
+    let scrollFrame: number | null = null;
+    // chatId of the streaming reply we already stopped following, so scrolling
+    // back to the bottom resumes following instead of stopping again.
+    let stoppedFollowingFor: string | null = null;
+
+    function isAtScrollEnd(sc: HTMLElement) {
+        if (getComputedStyle(sc).flexDirection === 'column-reverse') {
+            return Math.abs(sc.scrollTop) <= 2;
+        }
+        return sc.scrollHeight - sc.clientHeight - sc.scrollTop <= 2;
+    }
+
+    function findMessageElement(index: number) {
+        return chatBody?.querySelector(`:scope > [data-chat-index="${index}"]`) as HTMLElement | null;
+    }
+
+    function captureAnchor() {
+        if (!scroller || !chatBody) return;
+        const top = scroller.getBoundingClientRect().top;
+        let best: HTMLElement | null = null;
+        let bestTop = Infinity;
+        for (const child of chatBody.children) {
+            const el = child as HTMLElement;
+            if (!el.dataset.chatIndex) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.height === 0 || rect.bottom <= top + 1) continue;
+            if (rect.top < bestTop) {
+                bestTop = rect.top;
+                best = el;
+            }
+        }
+        anchor = best ? { index: Number(best.dataset.chatIndex), offset: bestTop - top } : null;
+    }
+
+    function streamingMessageKey(): { index: number, key: string } | null {
+        const chat = currentCharacter?.chats?.[currentCharacter.chatPage];
+        if (!chat?.isStreaming || messages.length === 0) return null;
+        const last = messages[messages.length - 1];
+        if (last?.role !== 'char') return null;
+        return { index: messages.length - 1, key: last.chatId ?? String(messages.length - 1) };
+    }
+
+    function restoreAnchor() {
+        const sc = scroller;
+        if (!sc || !chatBody || touching) return;
+        const scTop = sc.getBoundingClientRect().top;
+
+        if (pinnedToBottom) {
+            if ((DBState.db.streamingScrollMode ?? 'stopAtStart') !== 'stopAtStart') return;
+            const streaming = streamingMessageKey();
+            if (!streaming || stoppedFollowingFor === streaming.key) return;
+            const el = findMessageElement(streaming.index);
+            if (!el) return;
+            const elTop = el.getBoundingClientRect().top;
+            if (elTop >= scTop + ANCHOR_TOP_MARGIN) return;
+            // The reply's first line reached the top: stop following and keep it there.
+            stoppedFollowingFor = streaming.key;
+            pinnedToBottom = false;
+            sc.scrollTop += elTop - (scTop + ANCHOR_TOP_MARGIN);
+            anchor = { index: streaming.index, offset: ANCHOR_TOP_MARGIN };
+            return;
+        }
+
+        if (!anchor) {
+            captureAnchor();
+            return;
+        }
+        const el = findMessageElement(anchor.index);
+        if (!el) {
+            captureAnchor();
+            return;
+        }
+        const delta = el.getBoundingClientRect().top - scTop - anchor.offset;
+        if (Math.abs(delta) >= 1) {
+            sc.scrollTop += delta;
+        }
+    }
+
+    function onScrollerScroll() {
+        if (scrollFrame !== null) return;
+        scrollFrame = requestAnimationFrame(() => {
+            scrollFrame = null;
+            if (!scroller) return;
+            pinnedToBottom = isAtScrollEnd(scroller);
+            captureAnchor();
+        });
+    }
+
+    const onTouchStart = () => { touching = true; };
+    const onTouchEnd = () => {
+        touching = false;
+        onScrollerScroll();
+    };
+
+    let resizeObserver: ResizeObserver | null = null;
+
+    onMount(() => {
+        scroller = chatBody?.parentElement ?? null;
+        if (!scroller) return;
+        scroller.style.overflowAnchor = 'none';
+        scroller.addEventListener('scroll', onScrollerScroll, { passive: true });
+        scroller.addEventListener('touchstart', onTouchStart, { passive: true });
+        scroller.addEventListener('touchend', onTouchEnd, { passive: true });
+        scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
+        pinnedToBottom = isAtScrollEnd(scroller);
+        resizeObserver = new ResizeObserver(() => restoreAnchor());
+        resizeObserver.observe(chatBody);
+        resizeObserver.observe(scroller);
+    });
+
+    onDestroy(() => {
+        resizeObserver?.disconnect();
+        if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
+        if (scroller) {
+            scroller.removeEventListener('scroll', onScrollerScroll);
+            scroller.removeEventListener('touchstart', onTouchStart);
+            scroller.removeEventListener('touchend', onTouchEnd);
+            scroller.removeEventListener('touchcancel', onTouchEnd);
+        }
+    });
+
     let previousLength = 0;
     let previousChatRoomId: string | null = null;
 
@@ -253,6 +423,15 @@
 
         const currentChatRoomId = getCurrentChatRoomId();
         const isSameChat = currentChatRoomId === previousChatRoomId;
+        if(isSameChat){
+            restoreAnchor();
+        }
+        else{
+            // Another chat: the old anchor index means nothing here.
+            anchor = null;
+            stoppedFollowingFor = null;
+            pinnedToBottom = scroller ? isAtScrollEnd(scroller) : true;
+        }
 
         // Only auto-scroll if it's the same chat and new messages were added
         if(isSameChat && messages.length > previousLength){
@@ -274,3 +453,27 @@
 </script>
 
 <div class="flex flex-col-reverse" bind:this={chatBody}></div>
+
+<style>
+    /* Blinking cursor at the end of a streaming reply (streamingCursor). */
+    :global(.chat-message-container.risu-streaming .chattext > :last-child:not(style):not(script):not(br)::after) {
+        content: '';
+        display: inline-block;
+        width: 0.5em;
+        height: 1em;
+        margin-left: 0.15em;
+        vertical-align: text-bottom;
+        border-radius: 1px;
+        background: currentColor;
+        opacity: 0.6;
+        animation: risu-stream-cursor 1s steps(1) infinite;
+    }
+    @keyframes -global-risu-stream-cursor {
+        50% { opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        :global(.chat-message-container.risu-streaming .chattext > :last-child:not(style):not(script):not(br)::after) {
+            animation: none;
+        }
+    }
+</style>

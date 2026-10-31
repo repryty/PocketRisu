@@ -15,6 +15,7 @@ import type { RenderContext } from "../process/renderContext";
 import * as pluginStorageStore from "./pluginStorageStore";
 import { PLUGIN_CUSTOM_STORAGE_KEY, applyPluginDbKey, installApprovedPlugins, pluginCustomStorageProxy } from "./pluginDbProxy";
 import { hydratePluginCharacterSnapshotSync, restorePluginCharacterManifest, restorePluginDbKey } from './pluginCharacterSnapshot';
+import { withPluginMessageWatch } from '../pluginMessageChangeNotify';
 
 export const customProviderStore = writable([] as string[])
 
@@ -603,12 +604,12 @@ export const getV2PluginAPIs = () => {
             // Sync API: lazy asset manifests are filled from cache when possible.
             return hydratePluginCharacterSnapshotSync(getCurrentCharacter({ snapshot: true }))
         },
-        setChar: (char: any) => {
+        setChar: (char: any) => withPluginMessageWatch(() => {
             const db = getDatabase()
             const charid = get(selectedCharID)
             db.characters[charid] = restorePluginCharacterManifest(char, db.characters[charid])
             setDatabaseLite(db)
-        },
+        }),
         addProvider: (name: string, func: (arg: PluginV2ProviderArgument, abortSignal?: AbortSignal) => Promise<{ success: boolean, content: string }>, options?: PluginV2ProviderOptions) => {
             let provs = get(customProviderStore)
             provs.push(name)
@@ -835,7 +836,7 @@ export const getV2PluginAPIs = () => {
                 return pluginStorageStore.length();
             }
         },
-        setDatabaseLite: (newDb: any) => {
+        setDatabaseLite: (newDb: any) => withPluginMessageWatch(() => {
             const db = getDatabase();
             for (const key of Object.keys(newDb)) {
                 if (applyPluginDbKey(key, newDb[key])) {
@@ -849,8 +850,8 @@ export const getV2PluginAPIs = () => {
                 }
             }
             DBState.db = db;
-        },
-        setDatabase: async (newDb: any) => {
+        }),
+        setDatabase: (newDb: any) => withPluginMessageWatch(async () => {
             const db = getDatabase();
             for (const key of Object.keys(newDb)) {
                 if (key === 'plugins') {
@@ -873,7 +874,7 @@ export const getV2PluginAPIs = () => {
                 }
             }
             setDatabase(db);
-        },
+        }),
         SafeFunction: new Proxy(Function, {
             construct(target, args) {
                 return function() {

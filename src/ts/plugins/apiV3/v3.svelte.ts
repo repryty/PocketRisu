@@ -44,6 +44,7 @@ import {
     type TTSHookFn,
 } from "src/ts/process/ttsHooks";
 import isEqual from "lodash/isEqual";
+import { withPluginMessageWatch } from "../../pluginMessageChangeNotify";
 
 /*
     V3 API for RisuAI Plugins
@@ -964,14 +965,14 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
             }
             return null;
         },
-        setCharacterToIndex: (index:number, char:any) => {
+        setCharacterToIndex: (index:number, char:any) => withPluginMessageWatch(() => {
             const db = DBState.db
             const charIds = Object.keys(db.characters);
             const charId = charIds[index];
             if(charId){
                 DBState.db.characters[charId] = restorePluginCharacterManifest(char, db.characters[charId])
             }
-        },
+        }),
         getChatFromIndex: async (characterIndex:number, chatIndex:number) => {
             const db = DBState.db
             const charIds = Object.keys(db.characters);
@@ -1035,7 +1036,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
 
             return (await processScriptFull(char, parsed, 'editprocess', chatID, cbsConditions)).data;
         },
-        setChatToIndex: async (characterIndex:number, chatIndex:number, chat:any) => {
+        setChatToIndex: (characterIndex:number, chatIndex:number, chat:any) => withPluginMessageWatch(async () => {
             // A placeholder (an unopened chat taken from getCharacter* or
             // getDatabase) has no messages: writing it back would empty the
             // chat. Its contents come from getChatFromIndex.
@@ -1064,7 +1065,7 @@ const makeRisuaiAPIV3 = (iframe:HTMLIFrameElement,plugin:RisuPlugin) => {
                     }
                 }
             }
-        },
+        }),
         getCurrentCharacterIndex: () => {
             return get(selectedCharID)
         },

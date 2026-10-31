@@ -29,4 +29,13 @@
             bind:volume={DBState.db.translateSoundVolume}
         />
     </SoundGroup>
+
+    <SoundGroup title={language.groupPluginEditNotification}>
+        <SoundSetting
+            description={language.descPluginEditSound}
+            bind:enabled={DBState.db.playPluginEditSound}
+            bind:sound={DBState.db.pluginEditSound}
+            bind:volume={DBState.db.pluginEditSoundVolume}
+        />
+    </SoundGroup>
 </SettingPage>
