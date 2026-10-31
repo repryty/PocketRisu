@@ -200,6 +200,22 @@ export const accessibilitySettingsItems: SettingItem[] = [
         keywords: ['streaming', 'scroll', 'follow', 'stream']
     },
     {
+        id: 'acc.streamingLineMode',
+        type: 'check',
+        labelKey: 'streamingLineMode',
+        bindKey: 'streamingLineMode',
+        helpKey: 'streamingLineMode',
+        keywords: ['streaming', 'line', 'regex', 'stream']
+    },
+    {
+        id: 'acc.streamingFadeIn',
+        type: 'check',
+        labelKey: 'streamingFadeIn',
+        bindKey: 'streamingFadeIn',
+        helpKey: 'streamingFadeIn',
+        keywords: ['streaming', 'fade', 'animation', 'stream']
+    },
+    {
         id: 'acc.streamingCursor',
         type: 'check',
         labelKey: 'streamingCursor',

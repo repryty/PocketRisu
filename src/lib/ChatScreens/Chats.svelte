@@ -456,7 +456,7 @@
 
 <style>
     /* Blinking cursor at the end of a streaming reply (streamingCursor). */
-    :global(.chat-message-container.risu-streaming .chattext > :last-child:not(style):not(script):not(br)::after) {
+    :global(.chat-message-container.risu-streaming :is(.chattext, .chattext > .risu-stream-body) > :last-child:not(style):not(script):not(br):not(.risu-stream-body)::after) {
         content: '';
         display: inline-block;
         width: 0.5em;
@@ -472,7 +472,7 @@
         50% { opacity: 0; }
     }
     @media (prefers-reduced-motion: reduce) {
-        :global(.chat-message-container.risu-streaming .chattext > :last-child:not(style):not(script):not(br)::after) {
+        :global(.chat-message-container.risu-streaming :is(.chattext, .chattext > .risu-stream-body) > :last-child:not(style):not(script):not(br):not(.risu-stream-body)::after) {
             animation: none;
         }
     }

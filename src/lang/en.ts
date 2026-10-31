@@ -1490,6 +1490,8 @@ export const languageEnglish = {
     streamingScrollFollow: "Keep following the end",
     streamingScrollStopAtStart: "Stop when the reply's start reaches the top",
     streamingCursor: "Show Cursor While Streaming",
+    streamingLineMode: "Stream Line by Line",
+    streamingFadeIn: "Fade In Streamed Text",
     auxModelUnderModelSettings: "Show Separate Aux Models in Model Settings",
     showModelInSidebar: "Show Model Selection in Sidebar",
     showPresetInSidebar: "Show Preset Selection in Sidebar",

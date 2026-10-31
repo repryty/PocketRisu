@@ -1617,6 +1617,8 @@ export const languageKorean = {
   streamingScrollFollow: "끝까지 계속 따라가기",
   streamingScrollStopAtStart: "답변 시작이 화면 위에 닿으면 멈추기",
   streamingCursor: "스트리밍 중 커서 표시",
+  streamingLineMode: "줄 단위로 스트리밍 표시",
+  streamingFadeIn: "스트리밍 글 페이드인",
   auxModelUnderModelSettings: "보조 모델 분리를 모델 설정에 표시",
   showModelInSidebar: "사이드바에 모델 선택 표시",
   showPresetInSidebar: "사이드바에 프리셋 선택 표시",

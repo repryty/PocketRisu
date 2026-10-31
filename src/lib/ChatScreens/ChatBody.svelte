@@ -11,6 +11,7 @@
     import { getCurrentCharacter } from "src/ts/storage/database.svelte";
     import { getFileSrc, resolvePrioritizedAssetManifestNames } from "src/ts/globalApi.svelte";
     import { doingChat } from "src/ts/process/generationState";
+    import { morphHtml } from "src/ts/gui/streamMorph";
 
     interface Props {
         character?: simpleCharacterArgument|string|null
@@ -27,6 +28,8 @@
         modelShortName: string
         renderRawStreaming?: boolean
         rawStreamingText?: string
+        /** Streaming: patch the DOM in place instead of re-rendering it. */
+        streamingMorph?: boolean
     }
 
     let {
@@ -43,6 +46,7 @@
         modelShortName = '',
         renderRawStreaming = false,
         rawStreamingText = '',
+        streamingMorph = false,
     }: Props =  $props()
 
     // svelte-ignore non_reactive_update
@@ -483,6 +487,28 @@
 
     let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision))
 
+    let morphTarget: HTMLDivElement | null = $state(null)
+    let morphSeq = 0
+
+    $effect(() => {
+        if(!streamingMorph || shouldRenderRawStreaming || !morphTarget){
+            return
+        }
+        const target = morphTarget
+        const seq = ++morphSeq
+        // Seed with the last result so remounting the branch never shows a blank body.
+        if(target.childNodes.length === 0 && lastParsed){
+            morphHtml(target, addMetadataToElement(trimMarkdown(lastParsed), modelShortName), false)
+        }
+        markParsingResult.then((md) => {
+            // A newer chunk's parse superseded this one.
+            if(seq !== morphSeq || !target.isConnected) return
+            morphHtml(target, addMetadataToElement(trimMarkdown(md), modelShortName), DBState.db.streamingFadeIn !== false)
+            void checkImg()
+            if (bodyRoot) resolveInlayPlaceholders(bodyRoot)
+        })
+    })
+
     $effect(() => {
         if(shouldRenderRawStreaming){
             return
@@ -499,6 +525,9 @@
 
 {#if shouldRenderRawStreaming}
     <span class="whitespace-pre-wrap">{rawStreamingText}</span>
+{:else if streamingMorph}
+    <!-- display:contents keeps the morphed nodes laid out as direct children of .chattext -->
+    <div class="risu-stream-body" style="display: contents" bind:this={morphTarget}></div>
 {:else}
     {#await markParsingResult}
         {@html addMetadataToElement(trimMarkdown(lastParsed), modelShortName)}

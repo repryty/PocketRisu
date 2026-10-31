@@ -163,6 +163,8 @@ export function setDatabase(data:Database){
     data.pluginEditSoundVolume ??= 100
     data.streamingScrollMode ??= 'stopAtStart'
     data.streamingCursor ??= true
+    data.streamingLineMode ??= true
+    data.streamingFadeIn ??= true
     if(checkNullish(data.playMessageOnTranslateEnd)){
         data.playMessageOnTranslateEnd = false
     }
@@ -1521,6 +1523,10 @@ export interface Database{
     streamingScrollMode?:'follow'|'stopAtStart'
     /** Show a blinking cursor at the end of a streaming reply. */
     streamingCursor?:boolean
+    /** While streaming, show text only up to the last completed line. */
+    streamingLineMode?:boolean
+    /** Fade in newly added parts of a streaming reply. */
+    streamingFadeIn?:boolean
     seperateModelsForAxModels:boolean
     seperateModels:{
         memory: string
