@@ -4,6 +4,7 @@ import { globalFetch, fetchNative } from "../../globalApi.svelte";
 import { getModelInfo, LLMFlags, LLMFormat, type LLMModel } from "../../model/modellist";
 import { risuChatParser, risuEscape, risuUnescape } from "../../parser/parser.svelte";
 import { pluginProcess, pluginV2 } from "../../plugins/plugins.svelte";
+import { reportPluginMessageChange } from "../../pluginMessageChangeNotify";
 import { getCurrentCharacter, getCurrentChat, getDatabase, type character, type MessageGenerationInfo } from "../../storage/database.svelte";
 import { tokenizeNum, encodeWithTokenizer } from "../../tokenizer";
 import { v4 as uuidv4 } from "uuid";
@@ -220,7 +221,11 @@ export async function requestChatData(arg:requestDataArgument, model:ModelModeEx
             if(da.type === 'success' && da.toolExecuted){
                 if(arg.escape) da.result = risuEscape(da.result)
                 for(const replacer of pluginV2.replacerafterRequest){
-                    try { da.result = await replacer(da.result, model) }
+                    try {
+                        const before = da.result
+                        da.result = await replacer(da.result, model)
+                        if(model === 'model' && typeof before === 'string' && da.result !== before) reportPluginMessageChange()
+                    }
                     catch(e){ console.error('[ModelPreset] after-replacer failed', e) }
                 }
                 return {
@@ -242,7 +247,11 @@ export async function requestChatData(arg:requestDataArgument, model:ModelModeEx
 
             if(da.type === 'success' && pluginV2.replacerafterRequest.size > 0){
                 for(const replacer of pluginV2.replacerafterRequest){
+                    const before = da.result
                     da.result = await replacer(da.result, model)
+                    if(model === 'model' && typeof before === 'string' && da.result !== before){
+                        reportPluginMessageChange()
+                    }
                 }
             }
 

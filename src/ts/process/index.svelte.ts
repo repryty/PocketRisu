@@ -1667,6 +1667,24 @@ export async function sendChat(chatProcessIndex = -1,arg:{
         let streamingFlushPromise: Promise<void> | null = null
         let streamingFlushQueued = false
         let streamingFlushError: unknown = null
+        // Line mode: while the stream runs, only text up to the last newline is
+        // shown, so regex/HTML is applied to whole lines instead of a half-written
+        // tail. The final flush (after the stream ends) always uses the full text.
+        const lineGatedStreaming = coalesceStreamingDisplay && DBState.db.streamingLineMode !== false
+        const streamingLineFallbackChars = 800
+        let streamInputFinished = false
+        let lastShownStreamingText: string | null = null
+        const gateStreamingText = (text: string) => {
+            if(!lineGatedStreaming || streamInputFinished){
+                return text
+            }
+            const cut = text.lastIndexOf('\n')
+            // A very long line without a break would otherwise show nothing for too long.
+            if(text.length - cut - 1 > streamingLineFallbackChars){
+                return text
+            }
+            return cut === -1 ? '' : text.slice(0, cut + 1)
+        }
         const clearStreamingFlushSchedule = () => {
             if(streamingFlushTimer !== null){
                 clearTimeout(streamingFlushTimer)
@@ -1686,11 +1704,16 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             streamingFlushPromise = (async () => {
                 do {
                     streamingFlushQueued = false
-                    const nextResult = pendingStreamingResult
+                    const pendingResult = pendingStreamingResult
                     pendingStreamingResult = null
-                    if(nextResult === null){
+                    if(pendingResult === null){
                         continue
                     }
+                    const nextResult = gateStreamingText(pendingResult)
+                    if(nextResult === lastShownStreamingText){
+                        continue
+                    }
+                    lastShownStreamingText = nextResult
                     if(deferStreamingPostProcessing){
                         DBState.db.characters[selectedChar].chats[selectedChat].message[msgIndex].data = reformatContent(prefix + nextResult)
                         DBState.db.characters[selectedChar].reloadKeys += 1
@@ -1770,6 +1793,13 @@ export async function sendChat(chatProcessIndex = -1,arg:{
             abortSignal.removeEventListener('abort', abortReader)
             try {
                 if(coalesceStreamingDisplay){
+                    if(lineGatedStreaming){
+                        streamInputFinished = true
+                        // The last chunk may have been consumed gated by an in-flight flush.
+                        if(receivedStreamingResult && pendingStreamingResult === null){
+                            pendingStreamingResult = result
+                        }
+                    }
                     try {
                         await flushStreamingDisplay()
                     }

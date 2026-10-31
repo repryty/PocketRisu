@@ -158,6 +158,13 @@ export function setDatabase(data:Database){
     if(checkNullish(data.translateSoundVolume)){
         data.translateSoundVolume = 100
     }
+    data.playPluginEditSound ??= true
+    data.pluginEditSound ??= ''
+    data.pluginEditSoundVolume ??= 100
+    data.streamingScrollMode ??= 'stopAtStart'
+    data.streamingCursor ??= true
+    data.streamingLineMode ??= true
+    data.streamingFadeIn ??= true
     if(checkNullish(data.playMessageOnTranslateEnd)){
         data.playMessageOnTranslateEnd = false
     }
@@ -1507,6 +1514,19 @@ export interface Database{
     claudeRetrivalCaching: boolean
     outputImageModal: boolean
     playMessageOnTranslateEnd:boolean
+    /** Play a sound when a plugin changes chat message content. */
+    playPluginEditSound?:boolean
+    /** Sound for {@link playPluginEditSound}; same value format as messageSound. */
+    pluginEditSound?:string
+    pluginEditSoundVolume?:number
+    /** While streaming at the bottom: keep following, or stop once the reply's start reaches the top. */
+    streamingScrollMode?:'follow'|'stopAtStart'
+    /** Show a blinking cursor at the end of a streaming reply. */
+    streamingCursor?:boolean
+    /** While streaming, show text only up to the last completed line. */
+    streamingLineMode?:boolean
+    /** Fade in newly added parts of a streaming reply. */
+    streamingFadeIn?:boolean
     seperateModelsForAxModels:boolean
     seperateModels:{
         memory: string

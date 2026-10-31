@@ -186,6 +186,44 @@ export const accessibilitySettingsItems: SettingItem[] = [
         keywords: ['auto', 'scroll', 'new', 'message']
     },
     {
+        id: 'acc.streamingScrollMode',
+        type: 'select',
+        labelKey: 'streamingScrollMode',
+        bindKey: 'streamingScrollMode',
+        helpKey: 'streamingScrollMode',
+        options: {
+            selectOptions: [
+                { value: 'stopAtStart', labelKey: 'streamingScrollStopAtStart' },
+                { value: 'follow', labelKey: 'streamingScrollFollow' }
+            ]
+        },
+        keywords: ['streaming', 'scroll', 'follow', 'stream']
+    },
+    {
+        id: 'acc.streamingLineMode',
+        type: 'check',
+        labelKey: 'streamingLineMode',
+        bindKey: 'streamingLineMode',
+        helpKey: 'streamingLineMode',
+        keywords: ['streaming', 'line', 'regex', 'stream']
+    },
+    {
+        id: 'acc.streamingFadeIn',
+        type: 'check',
+        labelKey: 'streamingFadeIn',
+        bindKey: 'streamingFadeIn',
+        helpKey: 'streamingFadeIn',
+        keywords: ['streaming', 'fade', 'animation', 'stream']
+    },
+    {
+        id: 'acc.streamingCursor',
+        type: 'check',
+        labelKey: 'streamingCursor',
+        bindKey: 'streamingCursor',
+        helpKey: 'streamingCursor',
+        keywords: ['streaming', 'cursor', 'caret', 'stream']
+    },
+    {
         id: 'acc.alwaysScrollToNewMessage',
         type: 'check',
         labelKey: 'alwaysScrollToNewMessage',

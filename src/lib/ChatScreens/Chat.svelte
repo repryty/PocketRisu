@@ -604,7 +604,8 @@
                     bind:translating={translating}
                     bind:retranslate={retranslate}
                     {renderRawStreaming}
-                    {rawStreamingText} />
+                    {rawStreamingText}
+                    streamingMorph={isOptimizedStreamingMessage && streamingOptimizationMode === 'balanced'} />
             {/key}
         </span>
         {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && partialEditEnabled && (DBState.db.enableBlockPartialEdit || DBState.db.enableDragPartialEdit)}

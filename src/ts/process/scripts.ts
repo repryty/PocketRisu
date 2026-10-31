@@ -16,6 +16,7 @@ import type { RenderContext } from './renderContext';
 import { safeStructuredClone } from '../polyfill';
 import { cachedRegexReplace } from './regexReplaceCache';
 import { optimizeRegexSource } from './regexOptimizer';
+import { reportPluginMessageChange } from '../pluginMessageChangeNotify';
 
 const dreg = /{{data}}/g
 const randomness = /\|\|\|/g
@@ -160,6 +161,9 @@ export async function processScriptFull(char:character|simpleCharacterArgument, 
         for(const plugin of pluginV2[mode]){
             const res = await plugin(data, scriptContext)
             if(res !== null && res !== undefined){
+                if(res !== data && (mode === 'editoutput' || mode === 'editinput')){
+                    reportPluginMessageChange()
+                }
                 data = res
             }
         }
