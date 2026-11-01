@@ -505,6 +505,7 @@
 
     let previousLength = 0;
     let previousChatRoomId: string | null = null;
+    let previousStreaming = false;
 
     $effect(() => {
         void $ReloadChatPointer; // Make $effect track ReloadChatPointer changes
@@ -514,8 +515,11 @@
         const currentChatRoomId = getCurrentChatRoomId();
         const isSameChat = currentChatRoomId === previousChatRoomId;
         const lengthGrew = isSameChat && messages.length > previousLength;
-        if(!isSameChat || lengthGrew){
-            // A pinned reply and its reserved room end with the next message.
+        const streaming = currentCharacter.chats?.[currentCharacter.chatPage]?.isStreaming === true;
+        const streamEnded = isSameChat && previousStreaming && !streaming;
+        if(!isSameChat || lengthGrew || streamEnded){
+            // A pinned reply and its reserved room end with its stream (or
+            // the next message), so no blank space is left under the reply.
             if(pinnedReply){
                 releasePin();
                 if(scroller) pinnedToBottom = isAtScrollEnd(scroller);
@@ -548,6 +552,7 @@
         }
         previousLength = messages.length;
         previousChatRoomId = currentChatRoomId;
+        previousStreaming = streaming;
     })
 
 </script>
