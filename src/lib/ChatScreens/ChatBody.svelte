@@ -8,7 +8,7 @@
     import { addMetadataToElement, getDistance, ParseMarkdown, postTranslationParse, resolveInlayPlaceholders, trimMarkdown, type CbsConditions, type simpleCharacterArgument } from "../../ts/parser/parser.svelte"
     import { getLLMCache, translateHTML } from "../../ts/translator/translator"
     import { getModuleAssets, getModules } from "src/ts/process/modules";
-    import { getCurrentCharacter } from "src/ts/storage/database.svelte";
+    import { getCurrentCharacter, getCurrentChat } from "src/ts/storage/database.svelte";
     import { getFileSrc, resolvePrioritizedAssetManifestNames } from "src/ts/globalApi.svelte";
     import { doingChat } from "src/ts/process/generationState";
     import { morphHtml } from "src/ts/gui/streamMorph";
@@ -260,7 +260,13 @@
 
     let shouldRenderRawStreaming = $derived(renderRawStreaming && !translated && !retranslate)
 
-    const markParsing = async (data: string, charArg: string | simpleCharacterArgument, chatID: number, requestedRevision: number, tries?:number) => {
+    // Parses overlap while a reply streams and can finish out of order. Only
+    // the newest one may become lastParsed, or an older parse (from before a
+    // regex could match) briefly brings the unreplaced text back as the
+    // placeholder of the next one.
+    let latestParseSeq = 0
+
+    const markParsing = async (data: string, charArg: string | simpleCharacterArgument, chatID: number, requestedRevision: number, seq: number, tries?:number) => {
         // Capture the render flags explicitly. They are part of the render
         // input and must invalidate the sidebar-only fast path when
         // translation changes.
@@ -373,7 +379,7 @@
                 lastParsedQueue = hasRenderableResult(data) ? data : lastParsed
                 return lastParsedQueue
             }
-            const retryResult = await markParsing(data, charArg, chatID, requestedRevision, (tries ?? 0) + 1)
+            const retryResult = await markParsing(data, charArg, chatID, requestedRevision, seq, (tries ?? 0) + 1)
             if(hasRenderableResult(retryResult)){
                 lastParsedQueue = retryResult
             }
@@ -381,10 +387,31 @@
         }
         finally{
             //since trimMarkdown is fast, we don't need to cache it
-            if(hasRenderableResult(lastParsedQueue)){
-                lastParsed = lastParsedQueue
+            if(seq === latestParseSeq){
+                if(hasRenderableResult(lastParsedQueue)){
+                    lastParsed = lastParsedQueue
+                    rememberRender(lastParsedQueue)
+                }
+                lastRenderedRevision = requestedRevision
             }
-            lastRenderedRevision = requestedRevision
+        }
+    }
+
+    // A remounted message (stream end, reload pointer, edit) starts from its
+    // last render instead of an empty body while it parses again.
+    const renderCacheKey = (() => {
+        const chatId = getCurrentChat()?.message?.[idx]?.chatId
+        if(chatId) return `${chatId}:${idx}`
+        return idx < 0 ? `${getCurrentCharacter()?.chaId}:first` : null
+    })()
+    lastParsed = (renderCacheKey && renderCache.get(renderCacheKey)) || lastParsed
+
+    function rememberRender(html: string) {
+        if(!renderCacheKey || html === translationLoadingHTML) return
+        renderCache.delete(renderCacheKey)
+        renderCache.set(renderCacheKey, html)
+        if(renderCache.size > RENDER_CACHE_LIMIT){
+            renderCache.delete(renderCache.keys().next().value)
         }
     }
 
@@ -485,7 +512,7 @@
         }
     }
 
-    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision))
+    let markParsingResult = $derived.by(() => markParsing(msgDisplay, character, idx, renderRevision, ++latestParseSeq))
 
     let morphTarget: HTMLDivElement | null = $state(null)
     let morphSeq = 0
@@ -521,6 +548,11 @@
             if (bodyRoot) resolveInlayPlaceholders(bodyRoot)
         })
     })
+</script>
+
+<script module lang="ts">
+    const RENDER_CACHE_LIMIT = 300
+    const renderCache = new Map<string, string>()
 </script>
 
 {#if shouldRenderRawStreaming}

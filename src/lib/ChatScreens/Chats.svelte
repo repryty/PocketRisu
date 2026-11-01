@@ -106,7 +106,9 @@
         const performanceMode = currentChat?.isStreaming
             ? currentChat.activeStreamingDisplayOptimizationMode ?? configuredPerformanceMode
             : configuredPerformanceMode
-        const activeStreamingIndex = performanceMode !== 'off' && currentChat?.isStreaming
+        // Update the streaming message in place in every mode; keying it by its
+        // text (as 'off' used to) remounted it on every chunk.
+        const activeStreamingIndex = currentChat?.isStreaming
             ? messages.length - 1
             : -1
 
