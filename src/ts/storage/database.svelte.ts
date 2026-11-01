@@ -1520,7 +1520,7 @@ export interface Database{
     pluginEditSound?:string
     pluginEditSoundVolume?:number
     /** While streaming at the bottom: keep following, or stop once the reply's start reaches the top. */
-    streamingScrollMode?:'follow'|'stopAtStart'
+    streamingScrollMode?:'follow'|'stopAtStart'|'pinStart'
     /** Show a blinking cursor at the end of a streaming reply. */
     streamingCursor?:boolean
     /** While streaming, show text only up to the last completed line. */

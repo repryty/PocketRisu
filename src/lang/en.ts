@@ -1489,6 +1489,7 @@ export const languageEnglish = {
     streamingScrollMode: "Scroll While Streaming",
     streamingScrollFollow: "Keep following the end",
     streamingScrollStopAtStart: "Stop when the reply's start reaches the top",
+    streamingScrollPinStart: "Show the reply from its start and keep it still",
     streamingCursor: "Show Cursor While Streaming",
     streamingLineMode: "Stream Line by Line",
     streamingFadeIn: "Fade In Streamed Text",

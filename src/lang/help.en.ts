@@ -319,7 +319,7 @@ export const helpEn = {
         bulkEnabling: "Show buttons in the lorebook editor for enabling or disabling multiple entries at once.",
         showTranslationLoading: "Show a loading indicator while message translation is in progress.",
         autoScrollToNewMessage: "Automatically scroll to a newly arrived message.",
-        streamingScrollMode: "While a reply streams and you are at the bottom: keep following the newest text, or stop once the reply's first line reaches the top of the screen so you can read from the start. Scrolled up, the view never moves.",
+        streamingScrollMode: "While a reply streams and you are at the bottom: keep following the newest text, stop once the reply's first line reaches the top of the screen, or show the reply from its first line right away and keep the screen still while it grows. Scrolling by hand releases it. Scrolled up, the view never moves.",
         streamingCursor: "Show a blinking cursor at the end of a reply while it is streaming.",
         streamingLineMode: "While a reply streams, show it only up to the last finished line, so regex scripts and HTML are applied to whole lines instead of a half-written tail. The rest appears when the line ends (or when a line gets very long). Applies to the Balanced and Strong streaming optimization modes.",
         streamingFadeIn: "Fade in parts newly added to a streaming reply. Already shown parts are kept as they are, so their own entrance animations do not replay on every update (Balanced streaming optimization mode).",

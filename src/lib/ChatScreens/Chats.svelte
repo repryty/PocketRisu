@@ -269,6 +269,7 @@
 
     export const scrollToLatestMessage = () => {
         if(!chatBody) return;
+        releasePin();
         hasNewUnreadMessage = false;
         scrollLatestIntoChatScreen();
     }
@@ -334,10 +335,66 @@
         return { index: messages.length - 1, key: last.chatId ?? String(messages.length - 1) };
     }
 
+    // pinStart mode: a reply that starts while at the bottom is shown from its
+    // first line at once (a short user prompt kept above it) and stays put
+    // while it streams. chatBody's bottom padding reserves room below a short
+    // reply so it can sit at the top and grow downward without moving
+    // anything. The pin holds until the user scrolls or the next message
+    // arrives; the reserved room stays until then so the view does not drop.
+    let pinnedReply: { index: number, key: string, offset: number } | null = null;
+    let replySpacer = 0;
+
+    function setReplySpacer(px: number) {
+        replySpacer = px;
+        if (chatBody) chatBody.style.paddingBottom = px > 0 ? `${px}px` : '';
+    }
+
+    function pinOffset(sc: HTMLElement, index: number, el: HTMLElement) {
+        const prev = findMessageElement(index - 1);
+        if (prev && messages[index - 1]?.role === 'user' && prev.offsetHeight < sc.clientHeight / 3) {
+            return ANCHOR_TOP_MARGIN + el.getBoundingClientRect().top - prev.getBoundingClientRect().top;
+        }
+        return ANCHOR_TOP_MARGIN;
+    }
+
+    function fitReplySpacer(sc: HTMLElement) {
+        const el = pinnedReply && findMessageElement(pinnedReply.index);
+        if (!pinnedReply || !el) return;
+        const scrolledFromTop = getComputedStyle(sc).flexDirection === 'column-reverse'
+            ? sc.scrollHeight - sc.clientHeight + sc.scrollTop
+            : sc.scrollTop;
+        const elContentTop = el.getBoundingClientRect().top - sc.getBoundingClientRect().top + scrolledFromTop;
+        const below = sc.scrollHeight - replySpacer - elContentTop;
+        setReplySpacer(Math.max(0, Math.ceil(sc.clientHeight - pinnedReply.offset - below)));
+    }
+
+    function releasePin() {
+        pinnedReply = null;
+    }
+
     function restoreAnchor() {
         const sc = scroller;
         if (!sc || !chatBody || touching) return;
         const scTop = sc.getBoundingClientRect().top;
+
+        if (!pinnedReply && (DBState.db.streamingScrollMode ?? 'stopAtStart') === 'pinStart') {
+            const streaming = streamingMessageKey();
+            const el = streaming && stoppedFollowingFor !== streaming.key ? findMessageElement(streaming.index) : null;
+            // Decided once per reply, when it appears. Check the position
+            // itself: pinnedToBottom can lag behind when the view reached the
+            // end without a scroll event.
+            if (streaming && el) {
+                stoppedFollowingFor = streaming.key;
+                if (pinnedToBottom || isAtScrollEnd(sc)) {
+                    pinnedReply = { ...streaming, offset: pinOffset(sc, streaming.index, el) };
+                    pinnedToBottom = false;
+                }
+            }
+        }
+        if (pinnedReply) {
+            fitReplySpacer(sc);
+            anchor = { index: pinnedReply.index, offset: pinnedReply.offset };
+        }
 
         if (pinnedToBottom) {
             if ((DBState.db.streamingScrollMode ?? 'stopAtStart') !== 'stopAtStart') return;
@@ -374,13 +431,38 @@
         if (scrollFrame !== null) return;
         scrollFrame = requestAnimationFrame(() => {
             scrollFrame = null;
-            if (!scroller) return;
+            if (!scroller || pinnedReply) return;
             pinnedToBottom = isAtScrollEnd(scroller);
             captureAnchor();
         });
     }
 
-    const onTouchStart = () => { touching = true; };
+    // Scrolling by hand releases a pinned reply. Typing in the composer or a
+    // click on a button inside the scroller does not.
+    const PIN_SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ']);
+    function releasePinByUser() {
+        if (!pinnedReply) return;
+        releasePin();
+        // The scroll this input starts moves the view before the next frame
+        // re-captures the anchor; dropping the pinned anchor keeps a streaming
+        // update in between from snapping the view back to the reply.
+        anchor = null;
+        onScrollerScroll();
+    }
+    const onWheel = () => releasePinByUser();
+    const onPointerDown = (e: PointerEvent) => {
+        if (e.target === scroller) releasePinByUser();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+        const t = e.target as HTMLElement | null;
+        if (t?.closest('input, textarea, select, [contenteditable="true"]')) return;
+        if (PIN_SCROLL_KEYS.has(e.key)) releasePinByUser();
+    };
+
+    const onTouchStart = () => {
+        touching = true;
+        releasePinByUser();
+    };
     const onTouchEnd = () => {
         touching = false;
         onScrollerScroll();
@@ -396,6 +478,9 @@
         scroller.addEventListener('touchstart', onTouchStart, { passive: true });
         scroller.addEventListener('touchend', onTouchEnd, { passive: true });
         scroller.addEventListener('touchcancel', onTouchEnd, { passive: true });
+        scroller.addEventListener('wheel', onWheel, { passive: true });
+        scroller.addEventListener('pointerdown', onPointerDown);
+        scroller.addEventListener('keydown', onKeyDown);
         pinnedToBottom = isAtScrollEnd(scroller);
         resizeObserver = new ResizeObserver(() => restoreAnchor());
         resizeObserver.observe(chatBody);
@@ -410,6 +495,9 @@
             scroller.removeEventListener('touchstart', onTouchStart);
             scroller.removeEventListener('touchend', onTouchEnd);
             scroller.removeEventListener('touchcancel', onTouchEnd);
+            scroller.removeEventListener('wheel', onWheel);
+            scroller.removeEventListener('pointerdown', onPointerDown);
+            scroller.removeEventListener('keydown', onKeyDown);
         }
     });
 
@@ -423,6 +511,15 @@
 
         const currentChatRoomId = getCurrentChatRoomId();
         const isSameChat = currentChatRoomId === previousChatRoomId;
+        const lengthGrew = isSameChat && messages.length > previousLength;
+        if(!isSameChat || lengthGrew){
+            // A pinned reply and its reserved room end with the next message.
+            if(pinnedReply){
+                releasePin();
+                if(scroller) pinnedToBottom = isAtScrollEnd(scroller);
+            }
+            setReplySpacer(0);
+        }
         if(isSameChat){
             restoreAnchor();
         }
@@ -434,7 +531,8 @@
         }
 
         // Only auto-scroll if it's the same chat and new messages were added
-        if(isSameChat && messages.length > previousLength){
+        // (a pinned reply is already shown from its start).
+        if(lengthGrew && !pinnedReply){
             const lastMsg = messages[messages.length - 1];
             if(lastMsg && lastMsg.role === 'char' && DBState.db.autoScrollToNewMessage){
                 if(wasAtBottom || DBState.db.alwaysScrollToNewMessage){

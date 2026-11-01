@@ -1616,6 +1616,7 @@ export const languageKorean = {
   streamingScrollMode: "스트리밍 중 스크롤",
   streamingScrollFollow: "끝까지 계속 따라가기",
   streamingScrollStopAtStart: "답변 시작이 화면 위에 닿으면 멈추기",
+  streamingScrollPinStart: "답변을 처음부터 보여주고 화면 고정",
   streamingCursor: "스트리밍 중 커서 표시",
   streamingLineMode: "줄 단위로 스트리밍 표시",
   streamingFadeIn: "스트리밍 글 페이드인",

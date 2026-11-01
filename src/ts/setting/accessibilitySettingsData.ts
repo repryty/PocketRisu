@@ -194,6 +194,7 @@ export const accessibilitySettingsItems: SettingItem[] = [
         options: {
             selectOptions: [
                 { value: 'stopAtStart', labelKey: 'streamingScrollStopAtStart' },
+                { value: 'pinStart', labelKey: 'streamingScrollPinStart' },
                 { value: 'follow', labelKey: 'streamingScrollFollow' }
             ]
         },
