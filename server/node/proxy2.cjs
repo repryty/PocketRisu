@@ -121,6 +121,13 @@ const STRIP_DOWNSTREAM_HEADERS = [
     'content-security-policy-report-only',
     'clear-site-data',
     'cache-control',
+    // Upstream cache headers must not override the private, no-store set below.
+    'expires',
+    'cdn-cache-control',
+    'cloudflare-cdn-cache-control',
+    'surrogate-control',
+    'edge-control',
+    'x-accel-expires',
     'content-encoding',
     'content-length',
 ]
@@ -331,6 +338,9 @@ async function handleProxy2(req, res, opts) {
         const headObj = {}
         for (const [k, v] of head) headObj[k] = v
         headObj['x-risu-proxy-request-id'] = requestId
+        // Targets picked by the risu-url header all share the /proxy(2) URL, so
+        // no cache (browser or CDN) may store a relay response for reuse.
+        headObj['cache-control'] = 'private, no-store'
         res.header(headObj)
         res.status(response.status)
         emit('info', `streaming status=${response.status}`)

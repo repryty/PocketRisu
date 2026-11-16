@@ -145,6 +145,9 @@ export async function proxy2ClientTransport(opts: Proxy2TransportOptions): Promi
                 headers,
                 method,
                 signal,
+                // Every target shares the one /proxy2 URL (the real one is in
+                // risu-url), so a cached response would be served for another target.
+                cache: 'no-store',
             })
         } catch (e) {
             // AbortSignal must propagate immediately — never retry an abort.
