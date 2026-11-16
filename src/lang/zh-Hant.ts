@@ -2472,6 +2472,7 @@ export const languageChineseTraditional = {
     "showInSidebar": "顯示於側邊欄",
     "selectionCount": (n: number) => `已選取 ${n} 個`,
     "clearSelection": "清除選取",
+    "selectAllShown": "全部選取",
     "folderSettings": "資料夾設定",
     "folderColor": "資料夾顏色",
     "folderImage": "資料夾圖片",

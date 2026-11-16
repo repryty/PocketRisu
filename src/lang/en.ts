@@ -2506,6 +2506,7 @@ export const languageEnglish = {
     showInSidebar: "Show in sidebar",
     selectionCount: (n: number) => `${n} selected`,
     clearSelection: "Clear selection",
+    selectAllShown: "Select all",
     folderSettings: "Folder settings",
     folderColor: "Folder color",
     folderImage: "Folder image",

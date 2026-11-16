@@ -2752,6 +2752,7 @@ export const languageKorean = {
   showInSidebar: "사이드바에 표시",
   selectionCount: (n: number) => `${n}개 선택`,
   clearSelection: "선택 해제",
+  selectAllShown: "모두 선택",
   folderSettings: "폴더 설정",
   folderColor: "폴더 색상",
   folderImage: "폴더 이미지",

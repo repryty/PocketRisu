@@ -6,7 +6,7 @@
     import { onDestroy } from "svelte";
     import { v4 } from "uuid";
     import {
-        ArchiveIcon, ArchiveRestoreIcon, DownloadIcon, EyeIcon, EyeOffIcon, FolderIcon, FolderPlusIcon,
+        ArchiveIcon, ArchiveRestoreIcon, CheckCheckIcon, DownloadIcon, EyeIcon, EyeOffIcon, FolderIcon, FolderPlusIcon,
         PlusIcon, SearchIcon, SettingsIcon, SquareArrowOutUpRightIcon, TrashIcon, Undo2Icon, XIcon,
     } from "@lucide/svelte";
     import ShButton from "src/lib/UI/GUI/ShButton.svelte";
@@ -248,6 +248,16 @@
         return [...selectedIds].map((id) => entries.get(id)).filter((e): e is ManagerEntry => !!e && !e.trashed);
     }
 
+    // Live characters the current search and filter show; select-all picks
+    // these, so hidden-by-filter characters never get bulk-edited unseen.
+    let allShownSelected = $derived(flatList.length > 0 && flatList.every((e) => selectedIds.has(e.chaId)));
+
+    function selectAllShown() {
+        const next = new Set(selectedIds);
+        for (const e of flatList) next.add(e.chaId);
+        selectedIds = next;
+    }
+
     function clearSelection() {
         selectedIds = new Set();
     }
@@ -470,6 +480,7 @@
                 <ShButton variant="ghost" size="xs" disabled={selectedIds.size === 0} onclick={bulkMove}><FolderIcon />{language.folderMoveTo}</ShButton>
                 <ShButton variant="ghost" size="xs" disabled={selectedIds.size === 0 || bulkBusy} onclick={bulkDeactivate}><ArchiveIcon />{language.deactivateCharacter}</ShButton>
                 <ShButton variant="destructive" size="xs" disabled={selectedIds.size === 0 || bulkBusy} onclick={bulkTrash}><TrashIcon />{language.trash}</ShButton>
+                <ShButton variant="outline" size="xs" disabled={allShownSelected} onclick={selectAllShown}><CheckCheckIcon />{language.selectAllShown}</ShButton>
                 <ShButton variant="outline" size="xs" onclick={clearSelection}>{language.clearSelection}</ShButton>
             </div>
         {/if}
