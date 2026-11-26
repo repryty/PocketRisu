@@ -1790,6 +1790,8 @@ export const languageKorean = {
   personaNotePlaceholder: "이 페르소나를 구분할 고유 식별자를 입력하세요. 예: \"헌터 페르소나\"",
   personaDuplicate: "복제",
   personaDescribePrompt: "페르소나 시트 프롬프트",
+  personaSheet: "페르소나 시트",
+  personaDescribePromptReset: "기본값으로 초기화",
   personaAutoSheet: "이미지로 시트 생성",
   personaAutoSheetNoImage: "먼저 페르소나 이미지를 설정해주세요.",
   personaAutoSheetOverwrite: "현재 페르소나 설명을 생성된 시트로 덮어쓸까요?",

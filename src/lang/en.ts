@@ -1661,6 +1661,8 @@ export const languageEnglish = {
     personaNotePlaceholder: "Put a unique identifier for this persona here. Example: \"Hunter persona\"",
     personaDuplicate: "Duplicate",
     personaDescribePrompt: "Persona Sheet Prompt",
+    personaSheet: "Persona Sheet",
+    personaDescribePromptReset: "Reset to default",
     personaAutoSheet: "Generate sheet from image",
     personaAutoSheetNoImage: "Set a persona image first.",
     personaAutoSheetOverwrite: "Replace the current persona description with the generated sheet?",

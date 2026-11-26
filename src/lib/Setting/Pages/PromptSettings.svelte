@@ -22,7 +22,7 @@
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import ModelList from "src/lib/UI/ModelList.svelte";
     import { onDestroy, onMount } from "svelte";
-    import {defaultAutoSuggestPrompt, defaultPersonaDescribePrompt} from "../../../ts/storage/defaultPrompts";
+    import {defaultAutoSuggestPrompt} from "../../../ts/storage/defaultPrompts";
 
     let sorted = 0
     let warns: string[] = $state([])
@@ -300,10 +300,6 @@
     <div class="py-3 border-t border-darkborderc">
         <SettingFieldLabel label={language.autoSuggest} helpKey="autoSuggest" />
         <TextAreaInput className="mt-2" bind:value={DBState.db.autoSuggestPrompt} placeholder={defaultAutoSuggestPrompt}/>
-    </div>
-    <div class="py-3 border-t border-darkborderc">
-        <SettingFieldLabel label={language.personaDescribePrompt} helpKey="personaDescribePrompt" />
-        <TextAreaInput className="mt-2" bind:value={DBState.db.personaDescribePrompt} placeholder={defaultPersonaDescribePrompt}/>
     </div>
     <div class="py-3 border-t border-darkborderc">
         <SettingFieldLabel label={language.groupInnerFormat} helpKey="groupInnerFormat" />
