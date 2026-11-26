@@ -629,6 +629,8 @@ export const helpEn = {
             "A memo / identifier for this persona. Useful for distinguishing multiple personas that share the same display name.",
         personaDescription:
             "Persona information. Embedded into the system prompt sent to the model so it recognizes who the user is. Example: \"<user> is a 20 year old woman who normally speaks calmly.\"",
+        personaDescribePrompt:
+            "Prompt sent to the main model together with the persona image when you press \"Generate sheet from image\" in the persona settings. The response is written into the persona description.",
         personaLargePortrait:
             "Themes such as Waifulike will display a large portrait instead of the persona icon. Use when you want to show a full-body illustration of the persona.",
         openRouterFallback:

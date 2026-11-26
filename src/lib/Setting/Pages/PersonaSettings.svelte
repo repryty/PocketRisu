@@ -7,8 +7,9 @@
     import ShInput from "src/lib/UI/GUI/ShInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import FolderedList, { type FolderedItemPlacement } from "src/lib/UI/FolderedList.svelte";
-    import { HardDriveUploadIcon, PlusIcon, StarIcon } from "@lucide/svelte";
-    import { alertConfirm } from "src/ts/alert";
+    import { HardDriveUploadIcon, PlusIcon, SparklesIcon, StarIcon } from "@lucide/svelte";
+    import { alertConfirm, alertError, notifySuccess } from "src/ts/alert";
+    import { applyPersonaSheet, generatePersonaSheet } from "src/ts/personaSheet";
     import { getCharImage } from "src/ts/characters";
     import { changeUserPersona, exportUserPersona, importUserPersona, saveUserPersona, selectUserImg } from "src/ts/persona";
     import { onDestroy } from "svelte";
@@ -106,6 +107,31 @@
         void requestImmediateSave()
     }
 
+    let sheetGenerating = $state(false)
+
+    async function generateSheet() {
+        if (sheetGenerating) return
+        saveUserPersona()
+        const personaId = ensureId(DBState.db.personas[DBState.db.selectedPersona])
+        sheetGenerating = true
+        try {
+            const res = await generatePersonaSheet()
+            if (!res.ok) {
+                alertError(res.reason === 'noImage' ? language.personaAutoSheetNoImage : (res.error ?? 'Error'))
+                return
+            }
+            // The user may have switched persona while the request was running.
+            if (DBState.db.personas[DBState.db.selectedPersona]?.id !== personaId) return
+            if (DBState.db.personaPrompt.trim() && !await alertConfirm(language.personaAutoSheetOverwrite)) return
+            if (DBState.db.personas[DBState.db.selectedPersona]?.id !== personaId) return
+            applyPersonaSheet(res.text)
+            notifySuccess(language.personaAutoSheetDone)
+            void requestImmediateSave()
+        } finally {
+            sheetGenerating = false
+        }
+    }
+
     onDestroy(() => {
         saveUserPersona()
     })
@@ -174,7 +200,12 @@
                         <ShInput className="mt-1" bind:value={DBState.db.userNote} placeholder={language.personaNotePlaceholder} />
                     </div>
                     <div class="flex flex-col gap-1">
-                        <SettingFieldLabel label={language.description} helpKey="personaDescription" />
+                        <div class="flex items-center justify-between gap-2 flex-wrap">
+                            <SettingFieldLabel label={language.description} helpKey="personaDescription" />
+                            <ShButton size="sm" variant="outline" disabled={sheetGenerating || !DBState.db.userIcon} onclick={generateSheet}>
+                                {#if sheetGenerating}<div class="loadmove mx-1"></div>{:else}<SparklesIcon />{/if}{language.personaAutoSheet}
+                            </ShButton>
+                        </div>
                         <TextAreaInput className="mt-1" autocomplete="off" bind:value={DBState.db.personaPrompt} placeholder={`Put the description of this persona here.\nExample: [<user> is a 20 year old girl.]`} />
                     </div>
                     <div class="flex items-center justify-between gap-3">

@@ -1789,6 +1789,11 @@ export const languageKorean = {
   folderRemoveLengthError: "폴더를 제거하려면 폴더가 비어 있어야 합니다.",
   personaNotePlaceholder: "이 페르소나를 구분할 고유 식별자를 입력하세요. 예: \"헌터 페르소나\"",
   personaDuplicate: "복제",
+  personaDescribePrompt: "페르소나 시트 프롬프트",
+  personaAutoSheet: "이미지로 시트 생성",
+  personaAutoSheetNoImage: "먼저 페르소나 이미지를 설정해주세요.",
+  personaAutoSheetOverwrite: "현재 페르소나 설명을 생성된 시트로 덮어쓸까요?",
+  personaAutoSheetDone: "페르소나 시트가 생성되었습니다.",
   mcpAccessPrompt:
     '{{tool}}이(가) "{{action}}"을(를) 시도하고 있습니다. 허용하시겠습니까?',
   rememberToolUsage: "도구 사용 기억하기",
