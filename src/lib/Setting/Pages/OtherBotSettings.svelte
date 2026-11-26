@@ -20,6 +20,8 @@
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import { getCharImage } from "src/ts/characters";
     import { alertError, notifySuccess, notifyError } from "src/ts/alert";
+    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
+    import { defaultPersonaDescribePrompt } from "src/ts/storage/defaultPrompts";
 
 
 
@@ -193,6 +195,7 @@
     { label: 'TTS', value: 1 },
     { label: language.emotionImage, value: 2 },
     { label: language.imageGeneration, value: 3 },
+    { label: language.personaSheet, value: 4 },
 ]} bind:selected={$OtherBotsSubmenuIndex} />
 
 {#if $OtherBotsSubmenuIndex === 3}
@@ -1035,6 +1038,16 @@
     </SelectInput>
     {/snippet}
 </SettingRowLayout>
+</div>
+{/if}
+
+{#if $OtherBotsSubmenuIndex === 4}
+<div class="flex flex-col gap-1 py-3">
+    <SettingFieldLabel label={language.personaDescribePrompt} helpKey="personaDescribePrompt" />
+    <TextAreaInput className="mt-1" autocomplete="off" bind:value={DBState.db.personaDescribePrompt} placeholder={defaultPersonaDescribePrompt} />
+    <div class="mt-2">
+        <ShButton size="sm" variant="outline" onclick={() => DBState.db.personaDescribePrompt = defaultPersonaDescribePrompt}>{language.personaDescribePromptReset}</ShButton>
+    </div>
 </div>
 {/if}
 

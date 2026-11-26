@@ -5,7 +5,7 @@ import { DEFAULT_CHAT_LOAD_ADDITIONAL_PAGES, DEFAULT_CHAT_LOAD_INITIAL_PAGES, no
 import type { RisuPlugin } from '../plugins/plugins.svelte';
 import type {triggerscript as triggerscriptMain} from '../process/triggers';
 import { downloadFile, saveAsset as saveImageGlobal } from '../globalApi.svelte';
-import { defaultAutoSuggestPrompt, defaultJailbreak, defaultMainPrompt } from './defaultPrompts';
+import { defaultAutoSuggestPrompt, defaultPersonaDescribePrompt, defaultJailbreak, defaultMainPrompt } from './defaultPrompts';
 import { notifySuccess, notifyWarning } from '../alert';
 import type { NAISettings } from '../process/models/nai';
 import { prebuiltNAIpresets, prebuiltPresets } from '../process/templates/templates';
@@ -423,6 +423,7 @@ export function setDatabase(data:Database){
     data.sendKeyPC ??= 'enter'
     data.sendKeyMobile ??= 'ctrl-enter'
     data.autoSuggestPrompt ??= defaultAutoSuggestPrompt
+    data.personaDescribePrompt ??= defaultPersonaDescribePrompt
     data.autoSuggestPrefix ??= ""
     data.OAIPrediction ??= ''
     data.autoSuggestClean ??= true
@@ -1260,6 +1261,7 @@ export interface Database{
     koboldURL:string
     useAutoSuggestions:boolean
     autoSuggestPrompt:string
+    personaDescribePrompt:string
     autoSuggestPrefix:string
     autoSuggestClean:boolean
     claudeAPIKey:string,
