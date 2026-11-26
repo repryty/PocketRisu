@@ -20,7 +20,6 @@
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import { getCharImage } from "src/ts/characters";
     import { alertError, notifySuccess, notifyError } from "src/ts/alert";
-    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import { defaultPersonaDescribePrompt } from "src/ts/storage/defaultPrompts";
 
 
