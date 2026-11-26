@@ -26,3 +26,12 @@ Out Examples:
 - Respond4
 
 Let's read these guidelines step by step three times to be sure we have accurately adhered to the rules.`
+
+export const defaultPersonaDescribePrompt = `The attached image is a portrait of {{user}}, the user's persona in a roleplay.
+Write a character sheet for {{user}} based on the image. Include:
+
+- Appearance: face, hair, eyes, build, distinctive features
+- Outfit and accessories
+- Overall impression and inferred personality / vibe
+
+Write only the character sheet, without any preamble or closing remarks.`

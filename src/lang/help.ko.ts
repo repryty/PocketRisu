@@ -304,6 +304,7 @@ export const helpKo = {
         "personaName": "현재 페르소나 이름. 채팅의 `{{user}}` 변수에 들어가며, 캐릭터가 사용자를 부르는 이름이 됩니다.",
         "personaNote": "페르소나에 대한 메모/식별자. 같은 이름으로 여러 페르소나를 운용할 때 구분용.",
         "personaDescription": "페르소나 정보. 캐릭터에게 보내는 system 프롬프트에 포함되어 모델이 사용자 캐릭터를 인식합니다. 예: \"<user>는 20세 여성이며 평소 차분한 말투를 씁니다.\"",
+        "personaDescribePrompt": "페르소나 설정에서 \"이미지로 시트 생성\"을 누르면 페르소나 이미지와 함께 메인 모델로 보내는 프롬프트입니다. 응답이 페르소나 설명란에 들어갑니다.",
         "personaLargePortrait": "Waifulike 등 일부 테마에서 페르소나 아이콘 대신 큰 초상화를 표시합니다. 풀바디 일러스트를 보여주고 싶을 때.",
         "openRouterFallback": "선택한 모델이 일시적으로 사용 불가일 때 OpenRouter가 자동으로 호환 모델로 라우팅합니다. 안정성 향상. 끄면 그대로 에러를 반환합니다.",
         "openRouterMiddleOut": "OpenRouter의 컨텍스트 압축 기능. max context 한도를 넘는 요청에서 중간 메시지를 자동 요약합니다. 일부 모델은 지원 안 함.",
