@@ -49,10 +49,13 @@ export async function generatePersonaSheet(abortSignal?: AbortSignal): Promise<P
     if (rq.type === 'fail') return { ok: false, reason: 'fail', error: rq.result }
     if (rq.type !== 'success') return { ok: false, reason: 'fail', error: 'Unexpected response type' }
 
-    const text = rq.result
+    let text = rq.result
         .replace(/<Thoughts>[\s\S]*?<\/Thoughts>/g, '')
         .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/g, '')
         .trim()
+    // The default prompt asks for a markdown code block; keep only its body.
+    const fenced = text.match(/```[\w-]*\n([\s\S]*?)\n?```/)
+    if (fenced) text = fenced[1].trim()
     if (!text) return { ok: false, reason: 'fail', error: 'Empty response' }
     return { ok: true, text }
 }

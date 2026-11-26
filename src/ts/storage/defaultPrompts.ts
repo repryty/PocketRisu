@@ -27,11 +27,34 @@ Out Examples:
 
 Let's read these guidelines step by step three times to be sure we have accurately adhered to the rules.`
 
-export const defaultPersonaDescribePrompt = `The attached image is a portrait of {{user}}, the user's persona in a roleplay.
-Write a character sheet for {{user}} based on the image. Include:
+export const defaultPersonaDescribePrompt = `Fill out the following form based on the attached image. The character's name is {{user}}.
+Avoid ambiguous expressions such as "A or B"; settle every item on a single definitive answer.
+Describe the image as it is, concisely and plainly, without unnecessary literary narration.
+Do not use bold. Only ## and ### headings are allowed.
+Follow the provided form exactly.
+Write in English.
+Do not change the order of family name and given name.
+Include the Korean name in parentheses after the name.
+If the character is likely to have a tail, include a description of the tail.
+Use line breaks appropriately, but never two line breaks in a row.
+Since this describes the character's appearance, do not mention traits expected to apply only to this particular image (e.g. blushing, shoes not visible).
+If something cannot be determined from the image, fill it in with a plausible choice instead of leaving it undecided. Fill in anything that can be reasonably inferred.
+Put the result in a markdown code block.
+If an item has no suitable content and would be left blank, remove the item entirely.
 
-- Appearance: face, hair, eyes, build, distinctive features
-- Outfit and accessories
-- Overall impression and inferred personality / vibe
-
-Write only the character sheet, without any preamble or closing remarks.`
+## (Name)
+### Basic Information
+Height/Weight: 
+### Facial Features
+Skin Tone: (Complexion, texture, freckles, etc.)
+Eyes: (Eye shape/angle, iris color, pupil shape, eyelids)
+Nose/Mouth: (Bridge height, lip thickness or shape)
+Hair: (Bangs, parting direction, hair texture, length, etc.)
+### Body Details
+Physique: (Slender, muscular, stout, shoulder width, etc.)
+Hands/Feet: (Finger length, roughness, size, etc.)
+Distinguishing Features: (Scars, tattoos, piercings, tail/ears for non-humans)
+### Style
+Main Outfit: (Design, material, color palette)
+Accessories: (Necklace, rings, hats, bags, etc.)
+Personal Color: (Colors that best represent the character)`
